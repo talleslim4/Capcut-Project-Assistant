@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('capcut', {
   libraryUpdateItems: (ids, patch) => ipcRenderer.invoke('library-update-items', ids, patch),
   renameProject: (id, name) => ipcRenderer.invoke('rename-project', id, name),
   restartCapCut: () => ipcRenderer.invoke('restart-capcut'),
+  recycleDelete: (id) => ipcRenderer.invoke('recycle-delete', id),
   onProgress: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('operation-progress', listener); return () => ipcRenderer.removeListener('operation-progress', listener); },
   fontInfo: (mode, id) => ipcRenderer.invoke('font-info', mode, id)
 });
