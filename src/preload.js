@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('capcut', {
   importPreset: () => ipcRenderer.invoke('import-preset'),
   libraryGet: () => ipcRenderer.invoke('library-get'),
   libraryAddClient: (input) => ipcRenderer.invoke('library-add-client', input),
+  libraryAddFolder: (clientId, folder) => ipcRenderer.invoke('library-add-folder', clientId, folder),
+  libraryAddPresetFolder: (folder) => ipcRenderer.invoke('library-add-preset-folder', folder),
+  libraryDeletePresetFolder: (folder) => ipcRenderer.invoke('library-delete-preset-folder', folder),
   libraryDeleteClient: (id) => ipcRenderer.invoke('library-delete-client', id),
   libraryDeleteFolder: (clientId, folder) => ipcRenderer.invoke('library-delete-folder', clientId, folder),
   libraryUpdateItem: (id, patch) => ipcRenderer.invoke('library-update-item', id, patch),
@@ -20,5 +23,6 @@ contextBridge.exposeInMainWorld('capcut', {
   restartCapCut: () => ipcRenderer.invoke('restart-capcut'),
   recycleDelete: (id) => ipcRenderer.invoke('recycle-delete', id),
   onProgress: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('operation-progress', listener); return () => ipcRenderer.removeListener('operation-progress', listener); },
-  fontInfo: (mode, id) => ipcRenderer.invoke('font-info', mode, id)
+  fontInfo: (mode, id) => ipcRenderer.invoke('font-info', mode, id),
+  exportDetectedFonts: (mode, id) => ipcRenderer.invoke('export-detected-fonts', mode, id)
 });
