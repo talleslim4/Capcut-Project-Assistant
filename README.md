@@ -4,7 +4,7 @@ Aplicativo desktop para localizar, importar e exportar projetos completos do Cap
 
 Também inclui predefinições, fontes empacotadas, thumbnails, organização por clientes, árvore visual de pastas, seleção em massa, etiquetas, favoritos e análise de fontes ausentes.
 
-A versão 1.7.1 oculta arquivos internos do CapCut, permite criar pastas diretamente nos clientes, criar clientes pelo modal de edição e exportar em ZIP as fontes detectadas que estejam instaladas. Projetos usam a estrutura clientes → pastas; predefinições possuem pastas próprias e thumbnails locais quando o CapCut disponibiliza uma imagem de prévia. A exportação de fontes inclui um manifesto e exige que o usuário respeite a licença de redistribuição de cada arquivo.
+A versão 1.7.2 oculta arquivos internos do CapCut, permite criar pastas diretamente nos clientes e criar clientes pelo modal de edição. Projetos usam a estrutura clientes → pastas; predefinições possuem pastas próprias e thumbnails locais quando o CapCut disponibiliza uma imagem de prévia. Ao exportar um projeto ou uma predefinição em ZIP ou 7Z, as fontes detectadas e instaladas podem ser incluídas automaticamente no mesmo pacote. Na importação, o aplicativo reconhece esse pacote de fontes e oferece instalá-las no perfil do usuário. O manifesto preserva a integridade dos arquivos e o aplicativo alerta sobre a licença de redistribuição.
 
 Na organização em massa, **Selecionar visíveis** respeita o cliente, a pasta e o texto pesquisado. Ao selecionar somente um projeto, a ação **Renomear/editar projeto** pode alterar o nome de sua pasta real no CapCut.
 
