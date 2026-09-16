@@ -1,0 +1,23 @@
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('capcut', {
+  status: () => ipcRenderer.invoke('status'),
+  chooseRoot: () => ipcRenderer.invoke('choose-root'),
+  choosePresetRoot: () => ipcRenderer.invoke('choose-preset-root'),
+  openRoot: () => ipcRenderer.invoke('open-root'),
+  openPresetRoot: () => ipcRenderer.invoke('open-preset-root'),
+  revealLast: () => ipcRenderer.invoke('reveal-last'),
+  exportProject: (name, format) => ipcRenderer.invoke('export-project', name, format),
+  importProject: () => ipcRenderer.invoke('import-project'),
+  exportPreset: (name, format) => ipcRenderer.invoke('export-preset', name, format),
+  importPreset: () => ipcRenderer.invoke('import-preset'),
+  libraryGet: () => ipcRenderer.invoke('library-get'),
+  libraryAddClient: (input) => ipcRenderer.invoke('library-add-client', input),
+  libraryDeleteClient: (id) => ipcRenderer.invoke('library-delete-client', id),
+  libraryDeleteFolder: (clientId, folder) => ipcRenderer.invoke('library-delete-folder', clientId, folder),
+  libraryUpdateItem: (id, patch) => ipcRenderer.invoke('library-update-item', id, patch),
+  libraryUpdateItems: (ids, patch) => ipcRenderer.invoke('library-update-items', ids, patch),
+  renameProject: (id, name) => ipcRenderer.invoke('rename-project', id, name),
+  restartCapCut: () => ipcRenderer.invoke('restart-capcut'),
+  onProgress: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('operation-progress', listener); return () => ipcRenderer.removeListener('operation-progress', listener); },
+  fontInfo: (mode, id) => ipcRenderer.invoke('font-info', mode, id)
+});
