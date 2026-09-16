@@ -20,7 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - run: npm run dist:win -- --x64
+      - run: npm run dist:win -- --x64 --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: CapCut-Project-Assistant-Windows
@@ -37,8 +37,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Restaurar permissão do 7-Zip
+        run: chmod +x node_modules/7zip-bin/mac/*/7za
       - run: npm test
-      - run: npm run dist:mac -- --universal
+      - run: npm run dist:mac -- --universal --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
       - uses: actions/upload-artifact@v4
