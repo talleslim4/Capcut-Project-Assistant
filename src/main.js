@@ -49,12 +49,22 @@ async function validateExportDestination(source, destination) {
   }
 }
 
-async function chooseFonts() {
-  const answer = await dialog.showMessageBox(mainWindow, { type: 'question', title: 'Incluir fontes', message: 'Deseja incluir fontes neste pacote?', detail: 'Use somente fontes cuja licença permita o compartilhamento.', buttons: ['Selecionar fontes', 'Continuar sem fontes', 'Cancelar'], defaultId: 0, cancelId: 2 });
-  if (answer.response === 2) return null;
-  if (answer.response === 1) return [];
-  const picked = await dialog.showOpenDialog(mainWindow, { title: 'Selecione as fontes usadas', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Fontes', extensions: ['ttf', 'otf', 'ttc'] }] });
-  return picked.canceled ? null : picked.filePaths;
+async function chooseDetectedFonts(source) {
+  const { detected, matched } = await detectedInstalledFontFiles(source);
+  const missing = detected.filter((font) => !font.installed);
+  if (!detected.length) return { canceled: false, files: [], detected: 0, missing: 0 };
+  if (!matched.length) {
+    await dialog.showMessageBox(mainWindow, { type: 'info', title: 'Fontes não localizadas', message: `${detected.length} fonte(s) foram referenciadas, mas nenhuma foi localizada neste computador.`, detail: 'O item será exportado sem fontes. As referências permanecem preservadas.', buttons: ['Continuar'] });
+    return { canceled: false, files: [], detected: detected.length, missing: missing.length };
+  }
+  const answer = await dialog.showMessageBox(mainWindow, {
+    type: 'warning', title: 'Incluir fontes detectadas',
+    message: `${matched.length} fonte(s) instalada(s) serão incluídas automaticamente no pacote.`,
+    detail: `${missing.length ? `${missing.length} fonte(s) não foram localizadas.\n\n` : ''}Compartilhe somente fontes cuja licença permita redistribuição.`,
+    buttons: ['Incluir e exportar', 'Exportar sem fontes', 'Cancelar'], defaultId: 0, cancelId: 2
+  });
+  if (answer.response === 2) return { canceled: true, files: [], detected: detected.length, missing: missing.length };
+  return { canceled: false, files: answer.response === 0 ? matched.map((font) => font.path) : [], detected: detected.length, missing: missing.length };
 }
 
 function sendProgress(event, operation, percent, phase, processed = 0, total = 0, started = Date.now()) {
@@ -472,8 +482,10 @@ ipcMain.handle('export-project', async (event, name, format) => {
   const root = path.resolve(projectRoot);
   const source = path.resolve(root, name);
   if (!fs.existsSync(source) || path.dirname(source) !== root) throw new Error('Projeto inválido.');
-  const fonts = await chooseFonts();
-  if (fonts === null) return { canceled: true };
+  sendProgress(event, 'export', 1, 'Detectando fontes usadas');
+  const fontSelection = await chooseDetectedFonts(source);
+  if (fontSelection.canceled) return { canceled: true };
+  const fonts = fontSelection.files;
   const ext = format === '7z' ? '7z' : 'zip';
   const result = await dialog.showSaveDialog({ title: 'Exportar projeto', defaultPath: `${name}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
   if (result.canceled || !result.filePath) return { canceled: true };
@@ -482,7 +494,7 @@ ipcMain.handle('export-project', async (event, name, format) => {
   await exportWithFonts(source, result.filePath, ext, 'project', fonts, (p, phase, done, total) => sendProgress(event, 'export', p, phase, done, total, started));
   sendProgress(event, 'export', 100, 'Pacote concluído', 1, 1, started);
   lastRevealPath = result.filePath;
-  return { canceled: false, filePath: result.filePath, fonts: fonts.length };
+  return { canceled: false, filePath: result.filePath, fonts: fonts.length, detectedFonts: fontSelection.detected, missingFonts: fontSelection.missing };
 });
 
 ipcMain.handle('import-project', async (event) => {
@@ -512,8 +524,10 @@ ipcMain.handle('export-preset', async (event, name, format) => {
   const root = path.resolve(presetRoot);
   const source = path.resolve(root, name);
   if (!fs.existsSync(source) || path.dirname(source) !== root) throw new Error('Predefinição inválida.');
-  const fonts = await chooseFonts();
-  if (fonts === null) return { canceled: true };
+  sendProgress(event, 'export', 1, 'Detectando fontes usadas');
+  const fontSelection = await chooseDetectedFonts(source);
+  if (fontSelection.canceled) return { canceled: true };
+  const fonts = fontSelection.files;
   const ext = format === '7z' ? '7z' : 'zip';
   const result = await dialog.showSaveDialog({ title: 'Exportar predefinição', defaultPath: `${path.parse(name).name}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
   if (result.canceled || !result.filePath) return { canceled: true };
@@ -522,7 +536,7 @@ ipcMain.handle('export-preset', async (event, name, format) => {
   await exportWithFonts(source, result.filePath, ext, 'preset', fonts, (p, phase, done, total) => sendProgress(event, 'export', p, phase, done, total, started));
   sendProgress(event, 'export', 100, 'Pacote concluído', 1, 1, started);
   lastRevealPath = result.filePath;
-  return { canceled: false, filePath: result.filePath, fonts: fonts.length };
+  return { canceled: false, filePath: result.filePath, fonts: fonts.length, detectedFonts: fontSelection.detected, missingFonts: fontSelection.missing };
 });
 
 ipcMain.handle('import-preset', async (event) => {
