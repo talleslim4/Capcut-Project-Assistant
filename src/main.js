@@ -17,12 +17,12 @@ let presetRoot = null;
 let mainWindow = null;
 let lastRevealPath = null;
 
-const emptyLibrary = () => ({ version: 1, clients: [], items: {} });
+const emptyLibrary = () => ({ version: 3, clients: [], folders: {}, presetFolders: [], items: {} });
 function libraryFile() { return path.join(app.getPath('userData'), 'library.json'); }
 async function readLibrary() {
   try {
     const data = JSON.parse(await fsp.readFile(libraryFile(), 'utf8'));
-    return { ...emptyLibrary(), ...data, clients: Array.isArray(data.clients) ? data.clients : [], items: data.items && typeof data.items === 'object' ? data.items : {} };
+    return { ...emptyLibrary(), ...data, clients: Array.isArray(data.clients) ? data.clients : [], folders: data.folders && typeof data.folders === 'object' ? data.folders : {}, presetFolders: Array.isArray(data.presetFolders) ? data.presetFolders : [], items: data.items && typeof data.items === 'object' ? data.items : {} };
   } catch { return emptyLibrary(); }
 }
 async function writeLibrary(data) {
@@ -34,6 +34,10 @@ async function writeLibrary(data) {
   await fsp.rename(temporary, target);
 }
 function itemId(kind, itemPath) { return crypto.createHash('sha256').update(`${kind}\0${path.resolve(itemPath)}`).digest('hex').slice(0, 24); }
+function ignoredCapCutEntry(name) {
+  const value = String(name || '').toLowerCase();
+  return value.startsWith('.') || value === 'combinationpresetvirtualstore.json' || value === 'combinationpresetvirtualstore';
+}
 
 async function validateExportDestination(source, destination) {
   const sourcePath = path.resolve(source);
@@ -167,7 +171,7 @@ async function listProjects() {
   if (!projectRoot || !fs.existsSync(projectRoot)) return [];
   const entries = await fsp.readdir(projectRoot, { withFileTypes: true });
   const projects = [];
-  for (const entry of entries.filter((e) => e.isDirectory() && e.name !== '.recyclebin')) {
+  for (const entry of entries.filter((e) => e.isDirectory() && !ignoredCapCutEntry(e.name))) {
     const full = path.join(projectRoot, entry.name);
     const stat = await fsp.stat(full);
     projects.push({ id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: await thumbnailFor(full) });
@@ -177,8 +181,8 @@ async function listProjects() {
 
 async function listRecycleBin() {
   if (!projectRoot) return [];
-  const recycleRoot = path.join(projectRoot, '.recyclebin');
-  if (!fs.existsSync(recycleRoot)) return [];
+  const recycleRoot = ['.recyclebin', '.recycle_bin'].map((name) => path.join(projectRoot, name)).find(fs.existsSync);
+  if (!recycleRoot) return [];
   const entries = await fsp.readdir(recycleRoot, { withFileTypes: true });
   const recycled = [];
   for (const entry of entries) {
@@ -191,12 +195,29 @@ async function listRecycleBin() {
 
 async function thumbnailFor(folder) {
   try {
-    const entries = await fsp.readdir(folder, { withFileTypes: true });
-    const image = entries.find((entry) => entry.isFile() && /(?:cover|thumbnail|thumb|poster)/i.test(entry.name) && /\.(png|jpe?g|webp)$/i.test(entry.name));
-    if (!image) return null;
-    const imagePath = path.join(folder, image.name);
+    const candidates = [];
+    async function scan(current, depth = 0) {
+      if (depth > 3 || candidates.length > 80) return;
+      for (const entry of await fsp.readdir(current, { withFileTypes: true })) {
+        const full = path.join(current, entry.name);
+        if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name)) candidates.push(full);
+        else if (entry.isDirectory() && !entry.name.startsWith('.')) await scan(full, depth + 1);
+      }
+    }
+    const stat = await fsp.stat(folder);
+    if (stat.isDirectory()) await scan(folder);
+    else {
+      const directory = path.dirname(folder), stem = path.basename(folder, path.extname(folder));
+      for (const entry of await fsp.readdir(directory, { withFileTypes: true })) if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name) && (entry.name.startsWith(stem) || /(?:cover|thumbnail|thumb|poster|preview)/i.test(entry.name))) candidates.push(path.join(directory, entry.name));
+      if (/\.json$/i.test(folder)) try {
+        const raw = await fsp.readFile(folder, 'utf8');
+        for (const match of raw.matchAll(/"([^"\r\n]+\.(?:png|jpe?g|webp))"/gi)) { const imagePath = path.isAbsolute(match[1]) ? match[1] : path.resolve(directory, match[1]); if (fs.existsSync(imagePath)) candidates.push(imagePath); }
+      } catch {}
+    }
+    const imagePath = candidates.sort((a, b) => Number(/(?:cover|thumbnail|thumb|poster|preview)/i.test(b)) - Number(/(?:cover|thumbnail|thumb|poster|preview)/i.test(a)))[0];
+    if (!imagePath) return null;
     if ((await fsp.stat(imagePath)).size > 5 * 1024 * 1024) return null;
-    const ext = path.extname(image.name).toLowerCase();
+    const ext = path.extname(imagePath).toLowerCase();
     const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
     return `data:${mime};base64,${(await fsp.readFile(imagePath)).toString('base64')}`;
   } catch { return null; }
@@ -216,6 +237,25 @@ async function installedFonts() {
     for (const line of stdout.split(/\r?\n/)) { const match = line.match(/^\s+(.+?)\s+REG_SZ\s+/); if (match) names.add(normalizedFontName(match[1].replace(/\s+\((?:TrueType|OpenType)\)$/i, ''))); }
   } catch {}
   return names;
+}
+async function installedFontFiles() {
+  const files = [];
+  const folders = process.platform === 'win32'
+    ? [path.join(process.env.WINDIR || 'C:\\Windows', 'Fonts'), path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Windows', 'Fonts')]
+    : [path.join(os.homedir(), 'Library', 'Fonts'), '/Library/Fonts', '/System/Library/Fonts'];
+  for (const folder of folders) try {
+    for (const file of await fsp.readdir(folder)) if (/\.(ttf|otf|ttc)$/i.test(file)) files.push({ key: normalizedFontName(file), path: path.join(folder, file) });
+  } catch {}
+  return files;
+}
+async function detectedInstalledFontFiles(itemPath) {
+  const detected = await detectFonts(itemPath); const catalog = await installedFontFiles(); const matched = [];
+  for (const font of detected) {
+    const key = normalizedFontName(font.name);
+    const file = catalog.find((candidate) => candidate.key === key || (key.length > 4 && (candidate.key.includes(key) || key.includes(candidate.key))));
+    if (file && !matched.some((entry) => entry.path === file.path)) matched.push({ name: font.name, path: file.path });
+  }
+  return { detected, matched };
 }
 async function jsonFilesFor(itemPath) {
   const stat = await fsp.stat(itemPath);
@@ -252,10 +292,10 @@ async function listPresets() {
   if (!presetRoot || !fs.existsSync(presetRoot)) return [];
   const entries = await fsp.readdir(presetRoot, { withFileTypes: true });
   const presets = [];
-  for (const entry of entries.filter((e) => e.isDirectory() || e.isFile())) {
+  for (const entry of entries.filter((e) => (e.isDirectory() || e.isFile()) && !ignoredCapCutEntry(e.name))) {
     const full = path.join(presetRoot, entry.name);
     const stat = await fsp.stat(full);
-    presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: entry.isDirectory() ? await thumbnailFor(full) : null });
+    presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: await thumbnailFor(full) });
   }
   return presets.sort((a, b) => b.modified - a.modified);
 }
@@ -298,11 +338,32 @@ ipcMain.handle('library-add-client', async (_event, input) => {
 ipcMain.handle('library-delete-client', async (_event, clientId) => {
   const library = await readLibrary();
   library.clients = library.clients.filter((client) => client.id !== clientId);
+  delete library.folders[clientId];
   for (const item of Object.values(library.items)) if (item.clientId === clientId) { item.clientId = ''; item.folder = ''; }
+  await writeLibrary(library); return library;
+});
+ipcMain.handle('library-add-folder', async (_event, clientId, input) => {
+  const folder = String(input || '').trim().replace(/[\\]+/g, '/').replace(/^\/+|\/+$/g, '').slice(0, 160);
+  const library = await readLibrary();
+  if (!library.clients.some((client) => client.id === clientId)) throw new Error('Cliente inválido.');
+  if (!folder) throw new Error('Informe o nome da pasta.');
+  library.folders[clientId] = [...new Set([...(library.folders[clientId] || []), folder])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  await writeLibrary(library); return library;
+});
+ipcMain.handle('library-add-preset-folder', async (_event, input) => {
+  const folder = String(input || '').trim().replace(/[\\]+/g, '/').replace(/^\/+|\/+$/g, '').slice(0, 160);
+  if (!folder) throw new Error('Informe o nome da pasta.');
+  const library = await readLibrary(); library.presetFolders = [...new Set([...library.presetFolders, folder])].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  await writeLibrary(library); return library;
+});
+ipcMain.handle('library-delete-preset-folder', async (_event, folder) => {
+  const library = await readLibrary(); library.presetFolders = library.presetFolders.filter((value) => value !== folder && !value.startsWith(`${folder}/`));
+  for (const [id, item] of Object.entries(library.items)) if (id && (item.presetFolder === folder || item.presetFolder?.startsWith(`${folder}/`))) item.presetFolder = '';
   await writeLibrary(library); return library;
 });
 ipcMain.handle('library-delete-folder', async (_event, clientId, folder) => {
   const library = await readLibrary();
+  library.folders[clientId] = (library.folders[clientId] || []).filter((value) => value !== folder && !value.startsWith(`${folder}/`));
   for (const item of Object.values(library.items)) if (item.clientId === clientId && (item.folder === folder || item.folder?.startsWith(`${folder}/`))) item.folder = '';
   await writeLibrary(library); return library;
 });
@@ -314,6 +375,7 @@ ipcMain.handle('library-update-item', async (_event, id, patch) => {
     alias: String(patch?.alias || '').trim().slice(0, 120),
     clientId: String(patch?.clientId || '').slice(0, 80),
     folder: String(patch?.folder || '').trim().replace(/[\\]+/g, '/').slice(0, 160),
+    presetFolder: String(patch?.presetFolder || '').trim().replace(/[\\]+/g, '/').slice(0, 160),
     tags,
     favorite: Boolean(patch?.favorite)
   };
@@ -327,7 +389,7 @@ ipcMain.handle('library-update-items', async (_event, ids, patch) => {
   const tags = Array.isArray(patch?.tags) ? patch.tags.map((tag) => String(tag).trim().slice(0, 30)).filter(Boolean).slice(0, 12) : [];
   for (const id of validIds) {
     const current = library.items[id] || {};
-    library.items[id] = { ...current, clientId: String(patch?.clientId || '').slice(0, 80), folder: String(patch?.folder || '').trim().replace(/[\\]+/g, '/').slice(0, 160), tags: [...new Set([...(current.tags || []), ...tags])] };
+    library.items[id] = { ...current, clientId: String(patch?.clientId || '').slice(0, 80), folder: String(patch?.folder || '').trim().replace(/[\\]+/g, '/').slice(0, 160), presetFolder: String(patch?.presetFolder || '').trim().replace(/[\\]+/g, '/').slice(0, 160), tags: [...new Set([...(current.tags || []), ...tags])] };
   }
   await writeLibrary(library); return library;
 });
@@ -349,7 +411,12 @@ ipcMain.handle('restart-capcut', async () => {
   const executable = findCapCut(); if (!executable) throw new Error('CapCut não localizado.');
   const answer = await dialog.showMessageBox(mainWindow, { type: 'question', title: 'Reiniciar CapCut', message: 'Salvar e reiniciar o CapCut agora?', detail: 'Salve qualquer edição aberta. O CapCut será fechado para reconhecer os projetos importados.', buttons: ['Reiniciar agora', 'Cancelar'], defaultId: 1, cancelId: 1 });
   if (answer.response !== 0) return { canceled: true };
-  if (process.platform === 'win32') { try { await execFileAsync('taskkill.exe', ['/IM', 'CapCut.exe', '/T', '/F'], { windowsHide: true }); } catch {} }
+  if (process.platform === 'win32') {
+    const running = async () => { try { const { stdout } = await execFileAsync('tasklist.exe', ['/FI', 'IMAGENAME eq CapCut.exe', '/FO', 'CSV', '/NH'], { windowsHide: true }); return /"CapCut\.exe"/i.test(stdout); } catch { return false; } };
+    if (await running()) { try { await execFileAsync('taskkill.exe', ['/IM', 'CapCut.exe', '/T', '/F'], { windowsHide: true }); } catch {} }
+    const deadline = Date.now() + 10000;
+    while (await running()) { if (Date.now() >= deadline) throw new Error('O CapCut não pôde ser encerrado. Salve o projeto, feche o CapCut manualmente e tente novamente.'); await new Promise((resolve) => setTimeout(resolve, 500)); }
+  }
   else { try { await execFileAsync('pkill', ['-x', 'CapCut']); } catch {} }
   await new Promise((resolve) => setTimeout(resolve, 1200));
   if (process.platform === 'darwin') {
@@ -365,7 +432,9 @@ ipcMain.handle('restart-capcut', async () => {
 });
 ipcMain.handle('recycle-delete', async (_event, id) => {
   if (!projectRoot) throw new Error('Pasta de projetos não localizada.');
-  const recycleRoot = path.resolve(projectRoot, '.recyclebin');
+  const recyclePath = ['.recyclebin', '.recycle_bin'].map((name) => path.join(projectRoot, name)).find(fs.existsSync);
+  if (!recyclePath) throw new Error('Lixeira do CapCut não encontrada.');
+  const recycleRoot = path.resolve(recyclePath);
   const items = await listRecycleBin();
   const item = items.find((candidate) => candidate.id === id);
   if (!item || path.dirname(path.resolve(item.path)) !== recycleRoot) throw new Error('Item da lixeira inválido.');
@@ -377,6 +446,25 @@ ipcMain.handle('font-info', async (_event, mode, id) => {
   const item = items.find((candidate) => candidate.id === id);
   if (!item) throw new Error('Item não encontrado.');
   return detectFonts(item.path);
+});
+ipcMain.handle('export-detected-fonts', async (_event, mode, id) => {
+  const entries = mode === 'presets' ? await listPresets() : await listProjects();
+  const item = entries.find((candidate) => candidate.id === id); if (!item) throw new Error('Item não encontrado.');
+  const { detected, matched } = await detectedInstalledFontFiles(item.path);
+  if (!matched.length) throw new Error('Nenhuma das fontes detectadas foi localizada neste computador.');
+  const answer = await dialog.showMessageBox(mainWindow, { type: 'warning', title: 'Exportar fontes detectadas', message: `Foram localizadas ${matched.length} fonte(s).`, detail: 'Compartilhe somente fontes cuja licença permita redistribuição.', buttons: ['Exportar pacote ZIP', 'Cancelar'], defaultId: 1, cancelId: 1 });
+  if (answer.response !== 0) return { canceled: true };
+  const result = await dialog.showSaveDialog(mainWindow, { title: 'Exportar fontes detectadas', defaultPath: `${safeName(item.name)}-fontes.zip`, filters: [{ name: 'ZIP', extensions: ['zip'] }] });
+  if (result.canceled || !result.filePath) return { canceled: true };
+  const staging = path.join(os.tmpdir(), `capcut-fonts-${crypto.randomUUID()}`);
+  try {
+    await fsp.mkdir(staging, { recursive: true }); const records = [];
+    for (const font of matched) { const destination = uniqueEntryDestination(staging, path.basename(font.path), false); await fsp.copyFile(font.path, destination); records.push({ detectedName: font.name, file: path.basename(destination) }); }
+    await fsp.writeFile(path.join(staging, 'LEIA-ME.txt'), 'Pacote de fontes detectadas pelo CapCut Project Assistant.\nVerifique a licença de cada fonte antes de compartilhar ou instalar.\n');
+    await fsp.writeFile(path.join(staging, 'manifest.json'), JSON.stringify({ source: item.name, fonts: records, missing: detected.filter((font) => !font.installed).map((font) => font.name) }, null, 2));
+    await zipContents(staging, result.filePath); lastRevealPath = result.filePath;
+    return { canceled: false, filePath: result.filePath, exported: records.length, missing: detected.length - records.length };
+  } finally { await fsp.rm(staging, { recursive: true, force: true }); }
 });
 
 ipcMain.handle('export-project', async (event, name, format) => {
