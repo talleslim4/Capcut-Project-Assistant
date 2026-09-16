@@ -22,6 +22,10 @@ npm start
 - Windows: `npm run dist:win`
 - macOS (execute em um Mac): `npm run dist:mac`
 
+### Primeira abertura no macOS
+
+Os pacotes públicos gratuitos não são notarizados pela Apple. Depois de arrastar o aplicativo para **Aplicativos**, tente primeiro clicar com o botão direito nele e escolher **Abrir**. Se o macOS informar que o aplicativo está danificado, baixe `Abrir-no-macOS.command` no mesmo Release, clique nele com o botão direito, escolha **Abrir** e siga as instruções. O auxiliar atua somente sobre `/Applications/CapCut Project Assistant.app`.
+
 O pacote ZIP oferece compatibilidade ampla. O 7z usa compressão mais forte e é indicado para projetos grandes. O projeto importado recebe um novo nome automaticamente se já existir, evitando sobrescrita.
 
 > Para mover um projeto entre computadores, os dois devem usar versões compatíveis do CapCut. Se o projeto referenciar mídias externas que não estejam dentro de sua pasta, o CapCut poderá pedir para religá-las no computador de destino.
