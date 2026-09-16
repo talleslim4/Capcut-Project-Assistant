@@ -289,7 +289,7 @@ ipcMain.handle('library-delete-client', async (_event, clientId) => {
 });
 ipcMain.handle('library-delete-folder', async (_event, clientId, folder) => {
   const library = await readLibrary();
-  for (const item of Object.values(library.items)) if (item.clientId === clientId && item.folder === folder) item.folder = '';
+  for (const item of Object.values(library.items)) if (item.clientId === clientId && (item.folder === folder || item.folder?.startsWith(`${folder}/`))) item.folder = '';
   await writeLibrary(library); return library;
 });
 ipcMain.handle('library-update-item', async (_event, id, patch) => {
