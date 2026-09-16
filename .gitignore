@@ -1,0 +1,9 @@
+node_modules/
+work/
+outputs/
+*.log
+.DS_Store
+Thumbs.db
+.env
+credentials.json
+token.json

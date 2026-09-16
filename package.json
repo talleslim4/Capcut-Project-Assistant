@@ -1,0 +1,68 @@
+{
+  "name": "capcut-project-assistant",
+  "version": "1.5.0",
+  "description": "Importador e exportador seguro de projetos do CapCut para Windows e macOS",
+  "main": "src/main.js",
+  "author": "CapCut Project Assistant",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "dist:win": "electron-builder --win nsis portable",
+    "dist:mac": "electron-builder --mac dmg zip",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "7zip-bin": "^5.2.0",
+    "archiver": "^7.0.1"
+  },
+  "devDependencies": {
+    "electron": "^38.8.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.capcut.projectassistant",
+    "productName": "CapCut Project Assistant",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/7zip-bin/**"
+    ],
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "outputs/dist"
+    },
+    "electronDownload": {
+      "cache": "work/electron-cache"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/app-icon.png"
+    },
+    "nsis": {
+      "artifactName": "CapCut-Project-Assistant-Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "CapCut-Project-Assistant-Portable-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.video",
+      "icon": "assets/app-icon.png",
+      "artifactName": "CapCut-Project-Assistant-${version}-${arch}.${ext}"
+    }
+  }
+}
