@@ -338,8 +338,15 @@ ipcMain.handle('restart-capcut', async () => {
   if (process.platform === 'win32') { try { await execFileAsync('taskkill.exe', ['/IM', 'CapCut.exe', '/T', '/F'], { windowsHide: true }); } catch {} }
   else { try { await execFileAsync('pkill', ['-x', 'CapCut']); } catch {} }
   await new Promise((resolve) => setTimeout(resolve, 1200));
-  if (process.platform === 'darwin') await execFileAsync('open', ['-a', executable]);
-  else { const child = require('node:child_process').spawn(executable, [], { detached: true, stdio: 'ignore' }); child.unref(); }
+  if (process.platform === 'darwin') {
+    await execFileAsync('open', [executable]);
+  } else if (process.platform === 'win32') {
+    const launchError = await shell.openPath(executable);
+    if (launchError) throw new Error(`O Windows não conseguiu abrir o CapCut: ${launchError}`);
+  } else {
+    const launchError = await shell.openPath(executable);
+    if (launchError) throw new Error(`Não foi possível abrir o CapCut: ${launchError}`);
+  }
   return { canceled: false };
 });
 ipcMain.handle('font-info', async (_event, mode, id) => {
