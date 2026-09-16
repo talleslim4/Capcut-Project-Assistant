@@ -7,7 +7,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -27,6 +27,12 @@ jobs:
           path: |
             outputs/dist/*Setup*.exe
             outputs/dist/*Portable*.exe
+      - name: Publicar instaladores na versão
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: gh release upload $env:GITHUB_REF_NAME (Get-ChildItem outputs/dist/*.exe | ForEach-Object FullName) --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   macos:
     runs-on: macos-latest
@@ -49,3 +55,8 @@ jobs:
           path: |
             outputs/dist/*.dmg
             outputs/dist/*.zip
+      - name: Publicar instaladores na versão
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release upload "$GITHUB_REF_NAME" outputs/dist/*.dmg outputs/dist/*.zip --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
