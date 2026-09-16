@@ -167,12 +167,26 @@ async function listProjects() {
   if (!projectRoot || !fs.existsSync(projectRoot)) return [];
   const entries = await fsp.readdir(projectRoot, { withFileTypes: true });
   const projects = [];
-  for (const entry of entries.filter((e) => e.isDirectory())) {
+  for (const entry of entries.filter((e) => e.isDirectory() && e.name !== '.recyclebin')) {
     const full = path.join(projectRoot, entry.name);
     const stat = await fsp.stat(full);
     projects.push({ id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: await thumbnailFor(full) });
   }
   return projects.sort((a, b) => b.modified - a.modified);
+}
+
+async function listRecycleBin() {
+  if (!projectRoot) return [];
+  const recycleRoot = path.join(projectRoot, '.recyclebin');
+  if (!fs.existsSync(recycleRoot)) return [];
+  const entries = await fsp.readdir(recycleRoot, { withFileTypes: true });
+  const recycled = [];
+  for (const entry of entries) {
+    const full = path.join(recycleRoot, entry.name);
+    const stat = await fsp.stat(full);
+    recycled.push({ id: itemId('recycle', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: entry.isDirectory() ? await thumbnailFor(full) : null });
+  }
+  return recycled.sort((a, b) => b.modified - a.modified);
 }
 
 async function thumbnailFor(folder) {
@@ -249,7 +263,7 @@ async function listPresets() {
 ipcMain.handle('status', async () => {
   projectRoot ||= findProjectRoot();
   presetRoot ||= findPresetRoot();
-  return { projectRoot, presetRoot, capcut: findCapCut(), projects: await listProjects(), presets: await listPresets() };
+  return { projectRoot, presetRoot, capcut: findCapCut(), projects: await listProjects(), presets: await listPresets(), recycle: await listRecycleBin() };
 });
 
 ipcMain.handle('choose-root', async () => {
@@ -348,6 +362,15 @@ ipcMain.handle('restart-capcut', async () => {
     if (launchError) throw new Error(`Não foi possível abrir o CapCut: ${launchError}`);
   }
   return { canceled: false };
+});
+ipcMain.handle('recycle-delete', async (_event, id) => {
+  if (!projectRoot) throw new Error('Pasta de projetos não localizada.');
+  const recycleRoot = path.resolve(projectRoot, '.recyclebin');
+  const items = await listRecycleBin();
+  const item = items.find((candidate) => candidate.id === id);
+  if (!item || path.dirname(path.resolve(item.path)) !== recycleRoot) throw new Error('Item da lixeira inválido.');
+  await fsp.rm(item.path, { recursive: true, force: false });
+  return listRecycleBin();
 });
 ipcMain.handle('font-info', async (_event, mode, id) => {
   const items = mode === 'presets' ? await listPresets() : await listProjects();
