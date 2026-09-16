@@ -19,6 +19,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Preparar credencial Google OAuth
+        shell: pwsh
+        env:
+          GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
+        run: |
+          New-Item -ItemType Directory -Path secrets -Force | Out-Null
+          [IO.File]::WriteAllBytes('secrets/google-oauth-desktop.json', [Convert]::FromBase64String($env:GOOGLE_OAUTH_DESKTOP_B64))
       - run: npm test
       - run: npm run dist:win -- --x64 --publish never
       - uses: actions/upload-artifact@v4
@@ -43,6 +50,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Preparar credencial Google OAuth
+        env:
+          GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
+        run: |
+          mkdir -p secrets
+          printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" | base64 --decode > secrets/google-oauth-desktop.json
       - name: Restaurar permissão do 7-Zip
         run: chmod +x node_modules/7zip-bin/mac/*/7za Abrir-no-macOS.command
       - run: npm test
