@@ -2,11 +2,11 @@
 
 Aplicativo desktop para localizar, importar e exportar projetos completos do CapCut no Windows e macOS.
 
-Também inclui predefinições, fontes empacotadas, thumbnails, organização virtual por clientes, etiquetas, pastas, favoritos e análise de fontes ausentes — sem modificar a estrutura interna do CapCut.
+Também inclui predefinições, fontes empacotadas, thumbnails, organização por clientes e pastas, ações em massa, etiquetas, favoritos e análise de fontes ausentes.
 
 ## Segurança da organização
 
-Clientes, nomes personalizados, etiquetas, pastas virtuais e status são armazenados nos dados do próprio aplicativo. Nenhum desses dados é gravado dentro das pastas de projetos ou predefinições do CapCut.
+Clientes, nomes personalizados, etiquetas, pastas virtuais e favoritos são armazenados nos dados do próprio aplicativo. Excluir essa organização não apaga projetos ou predefinições do CapCut. Somente a ação explícita de renomear um projeto altera o nome de sua pasta real.
 
 ## Desenvolvimento
 
