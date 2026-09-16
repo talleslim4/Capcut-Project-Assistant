@@ -25,7 +25,12 @@ jobs:
           GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
         run: |
           New-Item -ItemType Directory -Path secrets -Force | Out-Null
-          [IO.File]::WriteAllBytes('secrets/google-oauth-desktop.json', [Convert]::FromBase64String($env:GOOGLE_OAUTH_DESKTOP_B64))
+          $raw = $env:GOOGLE_OAUTH_DESKTOP_B64.Trim()
+          if ($raw.StartsWith('{')) {
+            [IO.File]::WriteAllText('secrets/google-oauth-desktop.json', $raw, [Text.UTF8Encoding]::new($false))
+          } else {
+            [IO.File]::WriteAllBytes('secrets/google-oauth-desktop.json', [Convert]::FromBase64String($raw))
+          }
       - run: npm test
       - run: npm run dist:win -- --x64 --publish never
       - uses: actions/upload-artifact@v4
@@ -55,7 +60,10 @@ jobs:
           GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
         run: |
           mkdir -p secrets
-          printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" | base64 --decode > secrets/google-oauth-desktop.json
+          case "$GOOGLE_OAUTH_DESKTOP_B64" in
+            {*) printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" > secrets/google-oauth-desktop.json ;;
+            *) printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" | tr -d '\r\n ' | base64 --decode > secrets/google-oauth-desktop.json ;;
+          esac
       - name: Restaurar permissão do 7-Zip
         run: chmod +x node_modules/7zip-bin/mac/*/7za Abrir-no-macOS.command
       - run: npm test
