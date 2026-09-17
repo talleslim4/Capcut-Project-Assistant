@@ -19,18 +19,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Preparar credencial Google OAuth
+      - name: Preparar e validar credencial Google OAuth
         shell: pwsh
         env:
           GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
-        run: |
-          New-Item -ItemType Directory -Path secrets -Force | Out-Null
-          $raw = $env:GOOGLE_OAUTH_DESKTOP_B64.Trim()
-          if ($raw.StartsWith('{')) {
-            [IO.File]::WriteAllText('secrets/google-oauth-desktop.json', $raw, [Text.UTF8Encoding]::new($false))
-          } else {
-            [IO.File]::WriteAllBytes('secrets/google-oauth-desktop.json', [Convert]::FromBase64String($raw))
-          }
+        run: node -e "const fs=require('fs');let s=(process.env.GOOGLE_OAUTH_DESKTOP_B64||'').trim().replace(/^\uFEFF/,'');const i=s.indexOf('{');if(i>=0)s=s.slice(i);else s=Buffer.from(s.replace(/[^A-Za-z0-9+/=]/g,''),'base64').toString('utf8').replace(/^\uFEFF/,'');JSON.parse(s);fs.mkdirSync('secrets',{recursive:true});fs.writeFileSync('secrets/google-oauth-desktop.json',s,'utf8')"
       - run: npm test
       - run: npm run dist:win -- --x64 --publish never
       - uses: actions/upload-artifact@v4
@@ -56,15 +49,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Preparar credencial Google OAuth
+      - name: Preparar e validar credencial Google OAuth
         env:
           GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
-        run: |
-          mkdir -p secrets
-          case "$GOOGLE_OAUTH_DESKTOP_B64" in
-            {*) printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" > secrets/google-oauth-desktop.json ;;
-            *) printf '%s' "$GOOGLE_OAUTH_DESKTOP_B64" | tr -d '\r\n ' | base64 --decode > secrets/google-oauth-desktop.json ;;
-          esac
+        run: node -e "const fs=require('fs');let s=(process.env.GOOGLE_OAUTH_DESKTOP_B64||'').trim().replace(/^\uFEFF/,'');const i=s.indexOf('{');if(i>=0)s=s.slice(i);else s=Buffer.from(s.replace(/[^A-Za-z0-9+/=]/g,''),'base64').toString('utf8').replace(/^\uFEFF/,'');JSON.parse(s);fs.mkdirSync('secrets',{recursive:true});fs.writeFileSync('secrets/google-oauth-desktop.json',s,'utf8')"
       - name: Restaurar permissão do 7-Zip
         run: chmod +x node_modules/7zip-bin/mac/*/7za Abrir-no-macOS.command
       - run: npm test
