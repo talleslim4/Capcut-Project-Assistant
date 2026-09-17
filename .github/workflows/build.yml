@@ -35,12 +35,13 @@ jobs:
       - name: Publicar instaladores na versão
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         shell: pwsh
-        run: gh release upload $env:RELEASE_TAG (Get-ChildItem outputs/dist/*.exe | ForEach-Object FullName) --clobber
+        run: Get-ChildItem outputs/dist/*.exe | ForEach-Object { gh release upload $env:RELEASE_TAG $_.FullName --clobber }
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
 
   macos:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,8 +68,7 @@ jobs:
             outputs/dist/*.zip
             Abrir-no-macOS.command
       - name: Publicar instaladores na versão
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        run: gh release upload "$RELEASE_TAG" outputs/dist/*.dmg outputs/dist/*.zip Abrir-no-macOS.command --clobber
+        if: startsWith(github.ref, 'refs/tags/')
+        run: gh release upload "$GITHUB_REF_NAME" outputs/dist/*.dmg outputs/dist/*.zip Abrir-no-macOS.command --clobber
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
