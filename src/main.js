@@ -228,6 +228,7 @@ async function installAnyBundledFonts(extracted) {
 function window() {
   mainWindow = new BrowserWindow({
     width: 1050, height: 720, minWidth: 820, minHeight: 580,
+    resizable: true, useContentSize: true, center: true,
     backgroundColor: '#0b0c10',
     icon: path.join(__dirname, '..', 'assets', 'app-icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
