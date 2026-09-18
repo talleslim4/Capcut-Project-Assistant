@@ -19,6 +19,7 @@ let presetRoot = null;
 let mainWindow = null;
 let lastRevealPath = null;
 let driveSyncRunning = new Set();
+let automaticDriveCheckRunning = false;
 const driveObservedModified = new Map();
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
@@ -575,18 +576,24 @@ async function syncItemToDrive(event, mode, id, automatic = false) {
   try { return await syncMirrorToDrive(event, mode, id, automatic); } finally { driveSyncRunning.delete(id); }
 }
 async function checkAutomaticDriveSync() {
+  if (automaticDriveCheckRunning) return;
+  automaticDriveCheckRunning = true;
   try {
-    const status = await driveState(); if (!status.connected || !status.folder?.id) return;
     const library = await readLibrary();
+    const tracked = new Set(Object.entries(library.items).filter(([, meta]) => meta?.driveSync).map(([id]) => id));
+    if (!tracked.size) return;
+    const status = await Promise.race([driveState(), new Promise((resolve) => setTimeout(() => resolve(null), 5000))]);
+    if (!status?.connected || !status.folder?.id) return;
     for (const [mode, entries] of [['projects', await listProjects()], ['presets', await listPresets()]]) for (const item of entries) {
-      const meta = library.items[item.id]; if (!meta?.driveSync || driveSyncRunning.has(item.id)) continue;
+      if (!tracked.has(item.id) || driveSyncRunning.has(item.id)) continue;
+      const meta = library.items[item.id];
       const snapshot = mirrorSignature(await mirrorFiles(item.path));
       if (snapshot === meta.driveMirrorSignature) { driveObservedModified.delete(item.id); continue; }
       const previous = driveObservedModified.get(item.id); driveObservedModified.set(item.id, snapshot);
       if (previous !== snapshot) continue;
       syncItemToDrive(null, mode, item.id, true).catch((error) => mainWindow?.webContents.send('drive-sync-error', { id: item.id, message: error.message }));
     }
-  } catch {}
+  } catch {} finally { automaticDriveCheckRunning = false; }
 }
 
 async function listPresets() {
