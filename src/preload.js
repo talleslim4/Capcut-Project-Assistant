@@ -25,4 +25,13 @@ contextBridge.exposeInMainWorld('capcut', {
   onProgress: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('operation-progress', listener); return () => ipcRenderer.removeListener('operation-progress', listener); },
   fontInfo: (mode, id) => ipcRenderer.invoke('font-info', mode, id),
   exportDetectedFonts: (mode, id) => ipcRenderer.invoke('export-detected-fonts', mode, id)
+  ,driveStatus: () => ipcRenderer.invoke('drive-status')
+  ,driveConnect: () => ipcRenderer.invoke('drive-connect')
+  ,driveDisconnect: () => ipcRenderer.invoke('drive-disconnect')
+  ,driveSetFolder: (value) => ipcRenderer.invoke('drive-set-folder', value)
+  ,driveSyncSet: (mode, id, enabled, format) => ipcRenderer.invoke('drive-sync-set', mode, id, enabled, format)
+  ,driveSyncNow: (mode, id) => ipcRenderer.invoke('drive-sync-now', mode, id)
+  ,driveOpenFile: (id) => ipcRenderer.invoke('drive-open-file', id)
+  ,onDriveComplete: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('drive-sync-complete', listener); return () => ipcRenderer.removeListener('drive-sync-complete', listener); }
+  ,onDriveError: (callback) => { const listener = (_event, data) => callback(data); ipcRenderer.on('drive-sync-error', listener); return () => ipcRenderer.removeListener('drive-sync-error', listener); }
 });
