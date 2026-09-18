@@ -20,7 +20,7 @@ jobs:
       - name: Preparar credencial Google OAuth
         shell: pwsh
         env:
-          GOOGLE_OAUTH_DESKTOP_B64: \${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
+          GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
         run: node -e "const fs=require('fs');let s=(process.env.GOOGLE_OAUTH_DESKTOP_B64||'').trim();const i=s.indexOf('{');if(i>=0)s=s.slice(i);else s=Buffer.from(s.replace(/[^A-Za-z0-9+/=]/g,''),'base64').toString('utf8');JSON.parse(s);fs.mkdirSync('secrets',{recursive:true});fs.writeFileSync('secrets/google-oauth-desktop.json',s,'utf8')"
       - run: npm test
       - run: npm run dist:win -- --x64 --publish never
@@ -35,8 +35,8 @@ jobs:
         shell: pwsh
         run: Get-ChildItem outputs/dist/*.exe | ForEach-Object { gh release upload $env:RELEASE_TAG $_.FullName --clobber }
         env:
-          GH_TOKEN: \${{ github.token }}
-          RELEASE_TAG: \${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
   macos:
     runs-on: macos-latest
     steps:
@@ -48,7 +48,7 @@ jobs:
       - run: npm ci
       - name: Preparar credencial Google OAuth
         env:
-          GOOGLE_OAUTH_DESKTOP_B64: \${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
+          GOOGLE_OAUTH_DESKTOP_B64: ${{ secrets.GOOGLE_OAUTH_DESKTOP_B64 }}
         run: node -e "const fs=require('fs');let s=(process.env.GOOGLE_OAUTH_DESKTOP_B64||'').trim();const i=s.indexOf('{');if(i>=0)s=s.slice(i);else s=Buffer.from(s.replace(/[^A-Za-z0-9+/=]/g,''),'base64').toString('utf8');JSON.parse(s);fs.mkdirSync('secrets',{recursive:true});fs.writeFileSync('secrets/google-oauth-desktop.json',s,'utf8')"
       - name: Restaurar permissao do 7-Zip
         run: chmod +x node_modules/7zip-bin/mac/*/7za Abrir-no-macOS.command
@@ -67,5 +67,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: gh release upload "$RELEASE_TAG" outputs/dist/*.dmg outputs/dist/*.zip Abrir-no-macOS.command --clobber
         env:
-          GH_TOKEN: \${{ github.token }}
-          RELEASE_TAG: \${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.8.0' }}
