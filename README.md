@@ -1,10 +1,22 @@
 # CapCut Project Assistant
 
+## Espelho do Google Drive
+
+O espelho envia a pasta real do projeto ou da predefinição para uma pasta correspondente no Google Drive e atualiza somente arquivos novos ou alterados. Ele não cria ZIP/7z; esses formatos continuam disponíveis apenas na exportação manual. Fontes detectadas são copiadas para `__fonts__` dentro do espelho. Ao baixar a pasta pelo Drive, o ZIP gerado pode ser importado normalmente pelo aplicativo.
+
+Ao atualizar uma versão antiga, desconecte e conecte novamente a conta do Google para renovar a permissão de acesso à pasta compartilhada.
+
 Aplicativo desktop para localizar, importar e exportar projetos completos do CapCut no Windows e macOS.
 
 Também inclui predefinições, fontes empacotadas, thumbnails, organização por clientes, árvore visual de pastas, seleção em massa, etiquetas, favoritos e análise de fontes ausentes.
 
-A versão 1.7.2 oculta arquivos internos do CapCut, permite criar pastas diretamente nos clientes e criar clientes pelo modal de edição. Projetos usam a estrutura clientes → pastas; predefinições possuem pastas próprias e thumbnails locais quando o CapCut disponibiliza uma imagem de prévia. Ao exportar um projeto ou uma predefinição em ZIP ou 7Z, as fontes detectadas e instaladas podem ser incluídas automaticamente no mesmo pacote. Na importação, o aplicativo reconhece esse pacote de fontes e oferece instalá-las no perfil do usuário. O manifesto preserva a integridade dos arquivos e o aplicativo alerta sobre a licença de redistribuição.
+O espelho do Google Drive é ativado individualmente em cada projeto ou predefinição. Ele mantém a pasta real no Drive, envia apenas arquivos novos ou alterados e remove do espelho os arquivos que deixaram de existir localmente. ZIP e 7z continuam disponíveis somente na exportação manual.
+
+A organização continua usando clientes → pastas para projetos e pastas próprias para predefinições. Arquivos internos do CapCut são ocultados e thumbnails locais são exibidas quando o CapCut disponibiliza uma imagem de prévia. Na importação, o aplicativo reconhece fontes empacotadas e oferece instalá-las no perfil do usuário.
+
+## Google Drive
+
+O login acontece no navegador por OAuth. Tokens são armazenados somente no perfil local do aplicativo. A credencial desktop fica em `secrets/google-oauth-desktop.json`, caminho ignorado pelo Git, e é injetada nos instaladores pelo segredo `GOOGLE_OAUTH_DESKTOP_B64` do GitHub Actions. Para usar uma pasta compartilhada, o app solicita a permissão de escrita necessária no Drive; depois de atualizar uma versão antiga, desconecte e conecte novamente a conta para renovar o consentimento.
 
 Na organização em massa, **Selecionar visíveis** respeita o cliente, a pasta e o texto pesquisado. Ao selecionar somente um projeto, a ação **Renomear/editar projeto** pode alterar o nome de sua pasta real no CapCut.
 
