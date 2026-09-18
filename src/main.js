@@ -291,33 +291,43 @@ async function listRecycleBin() {
 
 async function thumbnailFor(folder) {
   try {
-    const candidates = [];
+    const candidates = new Map();
+    const addCandidate = (file) => {
+      if (candidates.size < 160 && !candidates.has(file)) candidates.set(file, true);
+    };
     async function scan(current, depth = 0) {
-      if (depth > 4 || candidates.length > 48) return;
+      if (depth > 8 || candidates.size >= 160) return;
       let entries = [];
       try { entries = await fsp.readdir(current, { withFileTypes: true }); } catch { return; }
       for (const entry of entries.slice(0, 160)) {
         const full = path.join(current, entry.name);
-        if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name)) candidates.push(full);
-        else if (entry.isDirectory() && !entry.name.startsWith('.')) await scan(full, depth + 1);
+        if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name)) addCandidate(full);
+        else if (entry.isDirectory() && !entry.name.startsWith('.') && !ignoredCapCutEntry(entry.name)) await scan(full, depth + 1);
       }
     }
     const stat = await fsp.stat(folder);
     if (stat.isDirectory()) await scan(folder);
     else {
       const directory = path.dirname(folder), stem = path.basename(folder, path.extname(folder));
-      for (const entry of await fsp.readdir(directory, { withFileTypes: true })) if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name) && (entry.name.startsWith(stem) || /(?:cover|thumbnail|thumb|poster|preview)/i.test(entry.name))) candidates.push(path.join(directory, entry.name));
+      for (const entry of await fsp.readdir(directory, { withFileTypes: true })) if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name) && (entry.name.startsWith(stem) || /(?:cover|thumbnail|thumb|poster|preview)/i.test(entry.name))) addCandidate(path.join(directory, entry.name));
       if (/\.json$/i.test(folder)) try {
         const raw = await fsp.readFile(folder, 'utf8');
-        for (const match of raw.matchAll(/"([^"\r\n]+\.(?:png|jpe?g|webp))"/gi)) { const imagePath = path.isAbsolute(match[1]) ? match[1] : path.resolve(directory, match[1]); if (fs.existsSync(imagePath)) candidates.push(imagePath); }
+        for (const match of raw.matchAll(/"([^"\r\n]+\.(?:png|jpe?g|webp))"/gi)) { const imagePath = path.isAbsolute(match[1]) ? match[1] : path.resolve(directory, match[1]); if (fs.existsSync(imagePath)) addCandidate(imagePath); }
       } catch {}
     }
-    const imagePath = candidates.sort((a, b) => Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(path.basename(b))) - Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(path.basename(a))))[0];
-    if (!imagePath) return null;
-    if ((await fsp.stat(imagePath)).size > 5 * 1024 * 1024) return null;
-    const ext = path.extname(imagePath).toLowerCase();
-    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
-    return `data:${mime};base64,${(await fsp.readFile(imagePath)).toString('base64')}`;
+    const ranked = [...candidates.keys()].sort((a, b) => {
+      const score = (value) => Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(path.basename(value))) * 10 + Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(value));
+      return score(b) - score(a);
+    });
+    for (const imagePath of ranked) {
+      let imageStat;
+      try { imageStat = await fsp.stat(imagePath); } catch { continue; }
+      if (!imageStat.isFile() || imageStat.size <= 0 || imageStat.size > 5 * 1024 * 1024) continue;
+      const ext = path.extname(imagePath).toLowerCase();
+      const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+      return `data:${mime};base64,${(await fsp.readFile(imagePath)).toString('base64')}`;
+    }
+    return null;
   } catch { return null; }
 }
 
@@ -568,7 +578,8 @@ ipcMain.handle('bootstrap', async () => {
 ipcMain.handle('status', async () => {
   projectRoot ||= findProjectRoot();
   presetRoot ||= findPresetRoot();
-  const [projects, presets, recycle] = await Promise.all([safeList(listProjects), safeList(listPresets), safeList(listRecycleBin)]);
+  const [projects, presets] = await Promise.all([safeList(listProjects), safeList(listPresets)]);
+  const recycle = await Promise.race([safeList(listRecycleBin), new Promise((resolve) => setTimeout(() => resolve([]), 2500))]);
   return { projectRoot, presetRoot, capcut: findCapCut(), projects, presets, recycle };
 });
 ipcMain.handle('thumbnail', async (_event, mode, id, itemPath) => {

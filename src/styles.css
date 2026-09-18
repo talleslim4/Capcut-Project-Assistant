@@ -9,3 +9,4 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 @media(max-width:1100px){.bulk-bar{grid-template-columns:repeat(2,minmax(0,1fr))}#bulk-tags,#bulk-edit{grid-column:1/-1}}@media(max-width:800px){.progress-meta{flex-direction:column;gap:4px}}
 main{width:100%;max-width:none;margin:0}
+html,body{width:100%;min-width:0}main{display:block;inline-size:100%;max-inline-size:none;min-inline-size:0}.workspace,.library-content{min-width:0;max-width:100%}
