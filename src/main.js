@@ -266,9 +266,11 @@ async function listProjects() {
   const projects = await Promise.all(visible.map(async (entry) => {
     const full = path.join(projectRoot, entry.name);
     const stat = await fsp.stat(full);
-    return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: await thumbnailFor(full) };
+    return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: null };
   }));
-  return projects.sort((a, b) => b.modified - a.modified);
+  projects.sort((a, b) => b.modified - a.modified);
+  await Promise.all(projects.slice(0, 24).map(async (project) => { project.thumbnail = await thumbnailFor(project.path); }));
+  return projects;
 }
 
 async function listRecycleBin() {
