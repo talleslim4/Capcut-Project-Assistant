@@ -263,11 +263,13 @@ async function listProjects() {
   if (!projectRoot || !fs.existsSync(projectRoot)) return [];
   const entries = await fsp.readdir(projectRoot, { withFileTypes: true });
   const visible = entries.filter((e) => e.isDirectory() && !ignoredCapCutEntry(e.name));
-  const projects = await Promise.all(visible.map(async (entry) => {
-    const full = path.join(projectRoot, entry.name);
-    const stat = await fsp.stat(full);
-    return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: null };
-  }));
+  const projects = (await Promise.all(visible.map(async (entry) => {
+    try {
+      const full = path.join(projectRoot, entry.name);
+      const stat = await fsp.stat(full);
+      return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: null };
+    } catch { return null; }
+  }))).filter(Boolean);
   projects.sort((a, b) => b.modified - a.modified);
   return projects;
 }
@@ -277,11 +279,13 @@ async function listRecycleBin() {
   const recycleRoot = ['.recyclebin', '.recycle_bin'].map((name) => path.join(projectRoot, name)).find(fs.existsSync);
   if (!recycleRoot) return [];
   const entries = await fsp.readdir(recycleRoot, { withFileTypes: true });
-  const recycled = await Promise.all(entries.map(async (entry) => {
-    const full = path.join(recycleRoot, entry.name);
-    const stat = await fsp.stat(full);
-    return { id: itemId('recycle', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null };
-  }));
+  const recycled = (await Promise.all(entries.map(async (entry) => {
+    try {
+      const full = path.join(recycleRoot, entry.name);
+      const stat = await fsp.stat(full);
+      return { id: itemId('recycle', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null };
+    } catch { return null; }
+  }))).filter(Boolean);
   return recycled.sort((a, b) => b.modified - a.modified);
 }
 
@@ -289,13 +293,13 @@ async function thumbnailFor(folder) {
   try {
     const candidates = [];
     async function scan(current, depth = 0) {
-      if (depth > 2 || candidates.length > 24) return;
+      if (depth > 4 || candidates.length > 48) return;
       let entries = [];
       try { entries = await fsp.readdir(current, { withFileTypes: true }); } catch { return; }
       for (const entry of entries.slice(0, 160)) {
         const full = path.join(current, entry.name);
         if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name)) candidates.push(full);
-        else if (entry.isDirectory() && !entry.name.startsWith('.') && /(?:cover|thumb|preview|thumbnail|draft|resource|asset|material|image)/i.test(entry.name)) await scan(full, depth + 1);
+        else if (entry.isDirectory() && !entry.name.startsWith('.')) await scan(full, depth + 1);
       }
     }
     const stat = await fsp.stat(folder);
@@ -308,7 +312,7 @@ async function thumbnailFor(folder) {
         for (const match of raw.matchAll(/"([^"\r\n]+\.(?:png|jpe?g|webp))"/gi)) { const imagePath = path.isAbsolute(match[1]) ? match[1] : path.resolve(directory, match[1]); if (fs.existsSync(imagePath)) candidates.push(imagePath); }
       } catch {}
     }
-    const imagePath = candidates.sort((a, b) => Number(/(?:cover|thumbnail|thumb|poster|preview)/i.test(b)) - Number(/(?:cover|thumbnail|thumb|poster|preview)/i.test(a)))[0];
+    const imagePath = candidates.sort((a, b) => Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(path.basename(b))) - Number(/(?:cover|thumbnail|thumb|poster|preview|draft)/i.test(path.basename(a))))[0];
     if (!imagePath) return null;
     if ((await fsp.stat(imagePath)).size > 5 * 1024 * 1024) return null;
     const ext = path.extname(imagePath).toLowerCase();
@@ -542,9 +546,11 @@ async function listPresets() {
   const entries = await fsp.readdir(presetRoot, { withFileTypes: true });
   const presets = [];
   for (const entry of entries.filter((e) => (e.isDirectory() || e.isFile()) && !ignoredCapCutEntry(e.name))) {
-    const full = path.join(presetRoot, entry.name);
-    const stat = await fsp.stat(full);
-    presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null });
+    try {
+      const full = path.join(presetRoot, entry.name);
+      const stat = await fsp.stat(full);
+      presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null });
+    } catch {}
   }
   return presets.sort((a, b) => b.modified - a.modified);
 }

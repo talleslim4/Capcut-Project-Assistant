@@ -8,3 +8,4 @@
 .toolbar-actions select{min-width:118px;background:#111319;border:1px solid #303744;color:#fff;border-radius:9px;padding:9px}.actions .danger{background:#3a1c22;color:#ffb4bd;border-color:#68303a}.actions .danger:hover{background:#51232c}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 @media(max-width:1100px){.bulk-bar{grid-template-columns:repeat(2,minmax(0,1fr))}#bulk-tags,#bulk-edit{grid-column:1/-1}}@media(max-width:800px){.progress-meta{flex-direction:column;gap:4px}}
+main{width:100%;max-width:none;margin:0}
