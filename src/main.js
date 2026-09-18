@@ -188,6 +188,37 @@ async function installBundledFonts(extracted) {
   return { found: fonts.length, installed };
 }
 
+// A folder downloaded from the Drive mirror keeps fonts in __fonts__ instead of
+// the package metadata folder used by manual ZIP/7Z exports. Normalize it to
+// the same installer format before the regular import flow continues.
+async function installMirroredFonts(extracted) {
+  const fontFiles = [];
+  async function scan(current, depth = 0) {
+    if (depth > 6) return;
+    let entries;
+    try { entries = await fsp.readdir(current, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '__fonts__') {
+          for (const font of await fsp.readdir(full, { withFileTypes: true })) if (font.isFile() && /\.(ttf|otf|ttc)$/i.test(font.name)) fontFiles.push(path.join(full, font.name));
+        } else if (!entry.name.startsWith('.')) await scan(full, depth + 1);
+      }
+    }
+  }
+  await scan(extracted);
+  if (!fontFiles.length) return { found: 0, installed: 0 };
+  const meta = path.join(extracted, '.capcut-assistant'); const fontDir = path.join(meta, 'fonts'); await fsp.mkdir(fontDir, { recursive: true }); const records = [];
+  for (const source of fontFiles) { const name = path.basename(source); const destination = uniqueEntryDestination(fontDir, name, false); await fsp.copyFile(source, destination); records.push({ file: path.basename(destination), sha256: crypto.createHash('sha256').update(await fsp.readFile(source)).digest('hex') }); }
+  await fsp.writeFile(path.join(meta, 'manifest.json'), JSON.stringify({ format: 'capcut-assistant-package', version: 1, kind: 'mirror', fonts: records }, null, 2));
+  for (const source of fontFiles) { const folder = path.dirname(source); try { await fsp.rm(folder, { recursive: true, force: true }); } catch {} }
+  return installBundledFonts(extracted);
+}
+async function installAnyBundledFonts(extracted) {
+  const packaged = await installBundledFonts(extracted);
+  return packaged.found ? packaged : await installMirroredFonts(extracted);
+}
+
 function window() {
   mainWindow = new BrowserWindow({
     width: 1050, height: 720, minWidth: 820, minHeight: 580,
@@ -401,9 +432,10 @@ async function ensureDriveFolder(value) {
   const library = await readLibrary(); library.driveFolder = { id: folder.id, name: folder.name }; await writeLibrary(library); return driveState();
 }
 
-async function resumableDriveUpload(filePath, name, folderId, event) {
-  const stat = await fsp.stat(filePath); const metadata = { name, parents: [folderId] };
-  const session = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink', { method: 'POST', headers: { 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'application/octet-stream', 'x-upload-content-length': String(stat.size) }, body: JSON.stringify(metadata) });
+async function resumableDriveUpload(filePath, name, folderId, event, existingId = '') {
+  const stat = await fsp.stat(filePath); const metadata = existingId ? { name } : { name, parents: [folderId] };
+  const endpoint = existingId ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingId)}?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink` : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink';
+  const session = await driveRequest(endpoint, { method: existingId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'application/octet-stream', 'x-upload-content-length': String(stat.size) }, body: JSON.stringify(metadata) });
   const location = session.headers.get('location'); if (!location) throw new Error('O Google não iniciou o upload.');
   const handle = await fsp.open(filePath, 'r'); const chunkSize = 8 * 1024 * 1024; let offset = 0, result = null, started = Date.now();
   try {
@@ -431,6 +463,64 @@ async function syncItemToDrive(event, mode, id, automatic = false) {
     const current = (await readLibrary()); current.items[id] = { ...(current.items[id] || {}), driveSync: true, driveFormat: format, driveLastSynced: item.modified, driveLastFileId: uploaded?.id || '', driveLastName: fileName }; await writeLibrary(current);
     mainWindow?.webContents.send('drive-sync-complete', { id, automatic, fileName, library: current }); return { fileName, uploaded, library: current };
   } finally { driveSyncRunning.delete(id); await fsp.rm(temporary, { force: true }); }
+}
+
+// Drive backup uses a folder mirror. ZIP/7Z remain manual export formats only.
+function driveQueryName(value) { return String(value).replace(/\\/g, '\\\\').replace(/'/g, "\\'"); }
+async function findDriveChild(name, parentId, mimeType = '') {
+  const clauses = [`'${driveQueryName(parentId)}' in parents`, `name='${driveQueryName(name)}'`, 'trashed=false'];
+  if (mimeType) clauses.push(`mimeType='${mimeType}'`);
+  const query = encodeURIComponent(clauses.join(' and '));
+  const response = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size,modifiedTime,md5Checksum)&spaces=drive&includeItemsFromAllDrives=true&supportsAllDrives=true&pageSize=1`);
+  return (await response.json()).files?.[0] || null;
+}
+async function ensureDriveChildFolder(name, parentId) {
+  const existing = await findDriveChild(name, parentId, 'application/vnd.google-apps.folder');
+  if (existing) return existing;
+  const response = await driveRequest('https://www.googleapis.com/drive/v3/files?fields=id,name,mimeType', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, parents: [parentId], mimeType: 'application/vnd.google-apps.folder' }) });
+  return response.json();
+}
+async function mirrorFiles(source) {
+  const files = [];
+  async function visit(current, relative = '') {
+    const stat = await fsp.stat(current);
+    if (stat.isDirectory()) {
+      for (const entry of await fsp.readdir(current, { withFileTypes: true })) {
+        if (entry.name === '.recyclebin' || entry.name === '.recycle_bin' || entry.name.startsWith('.')) continue;
+        await visit(path.join(current, entry.name), relative ? path.join(relative, entry.name) : entry.name);
+      }
+    } else if (stat.isFile()) files.push({ path: current, relative: relative.replace(/\\/g, '/'), size: stat.size, modified: stat.mtimeMs });
+  }
+  await visit(source);
+  return files;
+}
+async function syncMirrorToDrive(event, mode, id, automatic = false) {
+  const library = await readLibrary(); if (!library.driveFolder?.id) throw new Error('Escolha primeiro uma pasta do Google Drive.');
+  const entries = mode === 'presets' ? await listPresets() : await listProjects(); const item = entries.find((entry) => entry.id === id); if (!item) throw new Error('Item não encontrado.');
+  const meta = library.items[id] || {}; const displayName = safeName(meta.alias || path.parse(item.name).name);
+  const rootFolder = meta.driveMirrorFolderId ? { id: meta.driveMirrorFolderId, name: displayName } : await ensureDriveChildFolder(displayName, library.driveFolder.id);
+  const files = await mirrorFiles(item.path); const fontInfo = await detectedInstalledFontFiles(item.path); const fontFiles = fontInfo.matched.map((font) => ({ path: font.path, relative: path.posix.join('__fonts__', path.basename(font.path)), size: 0, modified: 0 }));
+  for (const font of fontFiles) { try { const stat = await fsp.stat(font.path); font.size = stat.size; font.modified = stat.mtimeMs; } catch {} }
+  const allFiles = [...files, ...fontFiles]; const total = allFiles.reduce((sum, file) => sum + file.size, 0); let processed = 0; const started = Date.now(); const previous = meta.driveMirrorFiles || {}; const next = {};
+  for (const file of allFiles) {
+    const parts = file.relative.split('/'); const fileName = parts.pop(); let parent = rootFolder.id;
+    for (const part of parts) parent = (await ensureDriveChildFolder(part, parent)).id;
+    const prior = previous[file.relative]; const unchanged = prior && prior.size === file.size && Math.abs(Number(prior.modified || 0) - file.modified) < 1 && prior.id;
+    let uploaded = prior ? { id: prior.id } : null;
+    if (!unchanged) uploaded = await resumableDriveUpload(file.path, fileName, parent, event, prior?.id || '');
+    next[file.relative] = { id: uploaded?.id || prior?.id || '', size: file.size, modified: file.modified };
+    processed += file.size; sendProgress(event, 'drive', total ? processed / total * 100 : 100, unchanged ? 'Verificando espelho do Google Drive' : 'Atualizando espelho do Google Drive', processed, total, started);
+  }
+  for (const [relative, oldFile] of Object.entries(previous)) if (!next[relative] && oldFile?.id) {
+    try { await driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(oldFile.id)}?supportsAllDrives=true`, { method: 'DELETE' }); } catch {}
+  }
+  const current = await readLibrary(); current.items[id] = { ...(current.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: next, driveLastSynced: item.modified, driveLastName: displayName }; await writeLibrary(current);
+  mainWindow?.webContents.send('drive-sync-complete', { id, automatic, fileName: displayName, library: current }); return { fileName: displayName, folderId: rootFolder.id, library: current };
+}
+async function syncItemToDrive(event, mode, id, automatic = false) {
+  if (driveSyncRunning.has(id)) return { busy: true };
+  driveSyncRunning.add(id);
+  try { return await syncMirrorToDrive(event, mode, id, automatic); } finally { driveSyncRunning.delete(id); }
 }
 async function checkAutomaticDriveSync() {
   try {
@@ -664,7 +754,7 @@ ipcMain.handle('import-project', async (event) => {
   const started = Date.now(); sendProgress(event, 'import', 2, 'Validando pacote', 0, 0, started);
   try {
     await extractArchive(result.filePaths[0], temp, (p) => sendProgress(event, 'import', 5 + p * .65, 'Extraindo arquivos', p, 100, started));
-    const fontResult = await installBundledFonts(temp);
+    const fontResult = await installAnyBundledFonts(temp);
     const payload = await projectPayload(temp);
     const suggested = payload === temp
       ? path.basename(result.filePaths[0], path.extname(result.filePaths[0]))
@@ -706,7 +796,7 @@ ipcMain.handle('import-preset', async (event) => {
   const started = Date.now(); sendProgress(event, 'import', 2, 'Validando pacote', 0, 0, started);
   try {
     await extractArchive(result.filePaths[0], temp, (p) => sendProgress(event, 'import', 5 + p * .65, 'Extraindo arquivos', p, 100, started));
-    const fontResult = await installBundledFonts(temp);
+    const fontResult = await installAnyBundledFonts(temp);
     const entries = (await fsp.readdir(temp, { withFileTypes: true })).filter((e) => e.name !== '__MACOSX' && e.name !== '.DS_Store');
     if (!entries.length) throw new Error('O pacote está vazio.');
     const installed = [];
