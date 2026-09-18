@@ -269,7 +269,6 @@ async function listProjects() {
     return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: null };
   }));
   projects.sort((a, b) => b.modified - a.modified);
-  await Promise.all(projects.slice(0, 24).map(async (project) => { project.thumbnail = await thumbnailFor(project.path); }));
   return projects;
 }
 
@@ -278,12 +277,11 @@ async function listRecycleBin() {
   const recycleRoot = ['.recyclebin', '.recycle_bin'].map((name) => path.join(projectRoot, name)).find(fs.existsSync);
   if (!recycleRoot) return [];
   const entries = await fsp.readdir(recycleRoot, { withFileTypes: true });
-  const recycled = [];
-  for (const entry of entries) {
+  const recycled = await Promise.all(entries.map(async (entry) => {
     const full = path.join(recycleRoot, entry.name);
     const stat = await fsp.stat(full);
-    recycled.push({ id: itemId('recycle', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: entry.isDirectory() ? await thumbnailFor(full) : null });
-  }
+    return { id: itemId('recycle', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null };
+  }));
   return recycled.sort((a, b) => b.modified - a.modified);
 }
 
@@ -546,7 +544,7 @@ async function listPresets() {
   for (const entry of entries.filter((e) => (e.isDirectory() || e.isFile()) && !ignoredCapCutEntry(e.name))) {
     const full = path.join(presetRoot, entry.name);
     const stat = await fsp.stat(full);
-    presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: await thumbnailFor(full) });
+    presets.push({ id: itemId('preset', full), name: entry.name, path: full, modified: stat.mtimeMs, kind: entry.isDirectory() ? 'folder' : 'file', thumbnail: null });
   }
   return presets.sort((a, b) => b.modified - a.modified);
 }
@@ -555,6 +553,14 @@ ipcMain.handle('status', async () => {
   projectRoot ||= findProjectRoot();
   presetRoot ||= findPresetRoot();
   return { projectRoot, presetRoot, capcut: findCapCut(), projects: await listProjects(), presets: await listPresets(), recycle: await listRecycleBin() };
+});
+ipcMain.handle('thumbnail', async (_event, mode, id, itemPath) => {
+  const root = mode === 'presets' ? presetRoot : projectRoot;
+  const resolved = path.resolve(String(itemPath || ''));
+  if (!root || !resolved.startsWith(path.resolve(root) + path.sep)) return null;
+  const expected = itemId(mode === 'presets' ? 'preset' : mode === 'recycle' ? 'recycle' : 'project', resolved);
+  if (expected !== id) return null;
+  return thumbnailFor(resolved);
 });
 ipcMain.handle('drive-status', async () => driveState());
 ipcMain.handle('drive-connect', async () => connectGoogleDrive());
