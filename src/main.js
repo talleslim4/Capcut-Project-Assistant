@@ -4,6 +4,7 @@ const fsp = fs.promises;
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const http = require('node:http');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const { findProjectRoot, findPresetRoot, findCapCut } = require('./paths');
@@ -16,6 +17,56 @@ let projectRoot = null;
 let presetRoot = null;
 let mainWindow = null;
 let lastRevealPath = null;
+let driveSyncRunning = new Set();
+const driveObservedModified = new Map();
+
+function driveTokenFile() { return path.join(app.getPath('userData'), 'google-drive-token.json'); }
+function driveCredentialsFile() {
+  const candidates = [
+    process.env.GOOGLE_OAUTH_CREDENTIALS_FILE,
+    path.join(process.resourcesPath || '', 'google-oauth-desktop.json'),
+    path.join(app.getAppPath(), 'secrets', 'google-oauth-desktop.json'),
+    path.join(__dirname, '..', 'secrets', 'google-oauth-desktop.json')
+  ].filter(Boolean);
+  return candidates.find(fs.existsSync) || null;
+}
+async function driveCredentials() {
+  const file = driveCredentialsFile();
+  if (!file) throw new Error('Credencial do Google Drive não foi incluída nesta versão do aplicativo.');
+  const data = JSON.parse(await fsp.readFile(file, 'utf8'));
+  const config = data.installed || data.web;
+  if (!config?.client_id || !config?.client_secret) throw new Error('Credencial OAuth do Google inválida.');
+  return config;
+}
+async function readDriveToken() { try { return JSON.parse(await fsp.readFile(driveTokenFile(), 'utf8')); } catch { return null; } }
+async function writeDriveToken(token) { await fsp.mkdir(path.dirname(driveTokenFile()), { recursive: true }); await fsp.writeFile(driveTokenFile(), JSON.stringify(token, null, 2), { mode: 0o600 }); }
+async function driveAccessToken() {
+  let token = await readDriveToken();
+  if (!token) throw new Error('Conecte uma conta Google primeiro.');
+  if (token.expires_at > Date.now() + 60000) return token.access_token;
+  const credentials = await driveCredentials();
+  const body = new URLSearchParams({ client_id: credentials.client_id, client_secret: credentials.client_secret, refresh_token: token.refresh_token, grant_type: 'refresh_token' });
+  const response = await fetch(credentials.token_uri || 'https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+  if (!response.ok) throw new Error('A autorização do Google expirou. Conecte a conta novamente.');
+  const fresh = await response.json(); token = { ...token, ...fresh, expires_at: Date.now() + fresh.expires_in * 1000 }; await writeDriveToken(token); return token.access_token;
+}
+async function driveRequest(url, options = {}) {
+  const token = await driveAccessToken();
+  const response = await fetch(url, { ...options, headers: { authorization: `Bearer ${token}`, ...(options.headers || {}) } });
+  if (!response.ok) { const detail = await response.text(); throw new Error(`Google Drive recusou a operação (${response.status}). ${detail.slice(0, 180)}`); }
+  return response;
+}
+async function driveState() {
+  const token = await readDriveToken(); const library = await readLibrary();
+  if (!token) return { connected: false, folder: library.driveFolder || null };
+  try {
+    const accessToken = await driveAccessToken();
+    const response = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', { headers: { authorization: `Bearer ${accessToken}` } });
+    const profile = response.ok ? await response.json() : {};
+    return { connected: true, email: profile.email || token.email || '', folder: library.driveFolder || null };
+  } catch { return { connected: false, reconnect: true, folder: library.driveFolder || null }; }
+}
+function driveFolderId(value) { const text = String(value || '').trim(); return text.match(/\/folders\/([\w-]+)/)?.[1] || text.match(/^[\w-]{10,}$/)?.[0] || ''; }
 
 const emptyLibrary = () => ({ version: 3, clients: [], folders: {}, presetFolders: [], items: {} });
 function libraryFile() { return path.join(app.getPath('userData'), 'library.json'); }
@@ -298,6 +349,102 @@ async function detectFonts(itemPath) {
   return [...found].sort().map((name) => { const key = normalizedFontName(name); return { name, installed: [...installed].some((candidate) => candidate === key || (key.length > 4 && (candidate.includes(key) || key.includes(candidate)))) }; });
 }
 
+async function connectGoogleDrive() {
+  const credentials = await driveCredentials();
+  const verifier = crypto.randomBytes(48).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  const state = crypto.randomBytes(24).toString('hex');
+  return new Promise((resolve, reject) => {
+    let completed = false;
+    const server = http.createServer(async (request, response) => {
+      try {
+        const incoming = new URL(request.url, 'http://127.0.0.1');
+        if (incoming.pathname !== '/oauth/callback') { response.writeHead(404).end(); return; }
+        if (incoming.searchParams.get('state') !== state) throw new Error('Resposta OAuth inválida.');
+        const code = incoming.searchParams.get('code');
+        if (!code) throw new Error(incoming.searchParams.get('error') || 'O Google não retornou autorização.');
+        const redirectUri = `http://127.0.0.1:${server.address().port}/oauth/callback`;
+        const body = new URLSearchParams({ code, client_id: credentials.client_id, client_secret: credentials.client_secret, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: verifier });
+        const tokenResponse = await fetch(credentials.token_uri || 'https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
+        if (!tokenResponse.ok) throw new Error(`Falha ao concluir login (${tokenResponse.status}).`);
+        const token = await tokenResponse.json();
+        await writeDriveToken({ ...token, expires_at: Date.now() + token.expires_in * 1000 });
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end('<!doctype html><meta charset="utf-8"><title>Conectado</title><style>body{font:18px system-ui;background:#101217;color:#fff;display:grid;place-items:center;height:100vh}main{text-align:center}</style><main><h1>Google Drive conectado</h1><p>Você já pode voltar ao CapCut Project Assistant.</p></main>');
+        completed = true; server.close(); resolve(await driveState());
+      } catch (error) { response.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' }).end(error.message); server.close(); reject(error); }
+    });
+    server.listen(0, '127.0.0.1', async () => {
+      const redirectUri = `http://127.0.0.1:${server.address().port}/oauth/callback`;
+      const params = new URLSearchParams({ client_id: credentials.client_id, redirect_uri: redirectUri, response_type: 'code', scope: 'openid email https://www.googleapis.com/auth/drive.file', access_type: 'offline', prompt: 'consent', state, code_challenge: challenge, code_challenge_method: 'S256' });
+      await shell.openExternal(`${credentials.auth_uri || 'https://accounts.google.com/o/oauth2/v2/auth'}?${params}`);
+    });
+    setTimeout(() => { if (!completed) { server.close(); reject(new Error('O login do Google expirou. Tente novamente.')); } }, 180000);
+  });
+}
+
+async function ensureDriveFolder(value) {
+  const requested = driveFolderId(value);
+  let folder;
+  if (requested) {
+    const response = await driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(requested)}?fields=id,name,mimeType,capabilities(canAddChildren)&supportsAllDrives=true`);
+    folder = await response.json();
+    if (folder.mimeType !== 'application/vnd.google-apps.folder' || folder.capabilities?.canAddChildren === false) throw new Error('A pasta não permite uploads para esta conta.');
+  } else {
+    const query = encodeURIComponent("name='CapCut Project Assistant' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+    const found = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&spaces=drive&pageSize=1`);
+    folder = (await found.json()).files?.[0];
+    if (!folder) {
+      const created = await driveRequest('https://www.googleapis.com/drive/v3/files?fields=id,name', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'CapCut Project Assistant', mimeType: 'application/vnd.google-apps.folder' }) });
+      folder = await created.json();
+    }
+  }
+  const library = await readLibrary(); library.driveFolder = { id: folder.id, name: folder.name }; await writeLibrary(library); return driveState();
+}
+
+async function resumableDriveUpload(filePath, name, folderId, event) {
+  const stat = await fsp.stat(filePath); const metadata = { name, parents: [folderId] };
+  const session = await driveRequest('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink', { method: 'POST', headers: { 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'application/octet-stream', 'x-upload-content-length': String(stat.size) }, body: JSON.stringify(metadata) });
+  const location = session.headers.get('location'); if (!location) throw new Error('O Google não iniciou o upload.');
+  const handle = await fsp.open(filePath, 'r'); const chunkSize = 8 * 1024 * 1024; let offset = 0, result = null, started = Date.now();
+  try {
+    while (offset < stat.size) {
+      const length = Math.min(chunkSize, stat.size - offset), buffer = Buffer.allocUnsafe(length); const { bytesRead } = await handle.read(buffer, 0, length, offset); const end = offset + bytesRead - 1;
+      const response = await fetch(location, { method: 'PUT', headers: { 'content-length': String(bytesRead), 'content-range': `bytes ${offset}-${end}/${stat.size}` }, body: buffer.subarray(0, bytesRead) });
+      if (![200, 201, 308].includes(response.status)) throw new Error(`Upload interrompido pelo Google (${response.status}).`);
+      offset += bytesRead; sendProgress(event, 'drive', offset / stat.size * 100, 'Enviando ao Google Drive', offset, stat.size, started);
+      if (response.status !== 308) result = await response.json();
+    }
+  } finally { await handle.close(); }
+  return result;
+}
+
+async function syncItemToDrive(event, mode, id, automatic = false) {
+  if (driveSyncRunning.has(id)) return { busy: true };
+  const library = await readLibrary(); if (!library.driveFolder?.id) throw new Error('Escolha primeiro uma pasta do Google Drive.');
+  const entries = mode === 'presets' ? await listPresets() : await listProjects(); const item = entries.find((entry) => entry.id === id); if (!item) throw new Error('Item não encontrado.');
+  const meta = library.items[id] || {}; const format = meta.driveFormat === 'zip' ? 'zip' : '7z'; const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 13); const displayName = safeName(meta.alias || path.parse(item.name).name); const fileName = `${displayName}_${stamp}.${format}`; const temporary = path.join(os.tmpdir(), `capcut-drive-${crypto.randomUUID()}.${format}`);
+  driveSyncRunning.add(id);
+  try {
+    sendProgress(event, 'drive', 2, 'Detectando fontes', 0, 0, Date.now()); const { matched } = await detectedInstalledFontFiles(item.path);
+    await exportWithFonts(item.path, temporary, format, mode === 'presets' ? 'preset' : 'project', matched.map((font) => font.path), (p, phase, done, total) => sendProgress(event, 'drive', p * .45, phase, done, total));
+    const uploaded = await resumableDriveUpload(temporary, fileName, library.driveFolder.id, event);
+    const current = (await readLibrary()); current.items[id] = { ...(current.items[id] || {}), driveSync: true, driveFormat: format, driveLastSynced: item.modified, driveLastFileId: uploaded?.id || '', driveLastName: fileName }; await writeLibrary(current);
+    mainWindow?.webContents.send('drive-sync-complete', { id, automatic, fileName, library: current }); return { fileName, uploaded, library: current };
+  } finally { driveSyncRunning.delete(id); await fsp.rm(temporary, { force: true }); }
+}
+async function checkAutomaticDriveSync() {
+  try {
+    const status = await driveState(); if (!status.connected || !status.folder?.id) return;
+    const library = await readLibrary();
+    for (const [mode, entries] of [['projects', await listProjects()], ['presets', await listPresets()]]) for (const item of entries) {
+      const meta = library.items[item.id]; if (!meta?.driveSync || item.modified <= Number(meta.driveLastSynced || 0) || driveSyncRunning.has(item.id)) continue;
+      const previous = driveObservedModified.get(item.id); driveObservedModified.set(item.id, item.modified);
+      if (previous !== item.modified) continue;
+      syncItemToDrive(null, mode, item.id, true).catch((error) => mainWindow?.webContents.send('drive-sync-error', { id: item.id, message: error.message }));
+    }
+  } catch {}
+}
+
 async function listPresets() {
   if (!presetRoot || !fs.existsSync(presetRoot)) return [];
   const entries = await fsp.readdir(presetRoot, { withFileTypes: true });
@@ -315,6 +462,17 @@ ipcMain.handle('status', async () => {
   presetRoot ||= findPresetRoot();
   return { projectRoot, presetRoot, capcut: findCapCut(), projects: await listProjects(), presets: await listPresets(), recycle: await listRecycleBin() };
 });
+ipcMain.handle('drive-status', async () => driveState());
+ipcMain.handle('drive-connect', async () => connectGoogleDrive());
+ipcMain.handle('drive-disconnect', async () => { await fsp.rm(driveTokenFile(), { force: true }); return driveState(); });
+ipcMain.handle('drive-set-folder', async (_event, value) => ensureDriveFolder(value));
+ipcMain.handle('drive-sync-set', async (event, mode, id, enabled, format = '7z') => {
+  const library = await readLibrary(); const current = library.items[id] || {}; library.items[id] = { ...current, driveSync: Boolean(enabled), driveFormat: format === 'zip' ? 'zip' : '7z' }; await writeLibrary(library);
+  if (enabled) return { enabled: true, ...(await syncItemToDrive(event, mode, id)), library: await readLibrary() };
+  return { enabled: false, library };
+});
+ipcMain.handle('drive-sync-now', async (event, mode, id) => syncItemToDrive(event, mode, id));
+ipcMain.handle('drive-open-file', async (_event, id) => { if (!id) return; await shell.openExternal(`https://drive.google.com/open?id=${encodeURIComponent(id)}`); });
 
 ipcMain.handle('choose-root', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], title: 'Selecione a pasta com.lveditor.draft' });
@@ -566,5 +724,5 @@ ipcMain.handle('import-preset', async (event) => {
   } finally { await fsp.rm(temp, { recursive: true, force: true }); }
 });
 
-app.whenReady().then(() => { app.setAppUserModelId('com.capcut.projectassistant'); Menu.setApplicationMenu(null); window(); app.on('activate', () => BrowserWindow.getAllWindows().length || window()); });
+app.whenReady().then(() => { app.setAppUserModelId('com.capcut.projectassistant'); Menu.setApplicationMenu(null); window(); setInterval(checkAutomaticDriveSync, 45000); app.on('activate', () => BrowserWindow.getAllWindows().length || window()); });
 app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());
