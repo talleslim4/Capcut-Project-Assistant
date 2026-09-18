@@ -262,12 +262,12 @@ async function copyEntryWithProgress(source, destination, callback) {
 async function listProjects() {
   if (!projectRoot || !fs.existsSync(projectRoot)) return [];
   const entries = await fsp.readdir(projectRoot, { withFileTypes: true });
-  const projects = [];
-  for (const entry of entries.filter((e) => e.isDirectory() && !ignoredCapCutEntry(e.name))) {
+  const visible = entries.filter((e) => e.isDirectory() && !ignoredCapCutEntry(e.name));
+  const projects = await Promise.all(visible.map(async (entry) => {
     const full = path.join(projectRoot, entry.name);
     const stat = await fsp.stat(full);
-    projects.push({ id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: await thumbnailFor(full) });
-  }
+    return { id: itemId('project', full), name: entry.name, path: full, modified: stat.mtimeMs, thumbnail: await thumbnailFor(full) };
+  }));
   return projects.sort((a, b) => b.modified - a.modified);
 }
 
@@ -289,11 +289,13 @@ async function thumbnailFor(folder) {
   try {
     const candidates = [];
     async function scan(current, depth = 0) {
-      if (depth > 3 || candidates.length > 80) return;
-      for (const entry of await fsp.readdir(current, { withFileTypes: true })) {
+      if (depth > 2 || candidates.length > 24) return;
+      let entries = [];
+      try { entries = await fsp.readdir(current, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries.slice(0, 160)) {
         const full = path.join(current, entry.name);
         if (entry.isFile() && /\.(png|jpe?g|webp)$/i.test(entry.name)) candidates.push(full);
-        else if (entry.isDirectory() && !entry.name.startsWith('.')) await scan(full, depth + 1);
+        else if (entry.isDirectory() && !entry.name.startsWith('.') && /(?:cover|thumb|preview|thumbnail|draft|resource|asset|material|image)/i.test(entry.name)) await scan(full, depth + 1);
       }
     }
     const stat = await fsp.stat(folder);
