@@ -549,10 +549,21 @@ async function listPresets() {
   return presets.sort((a, b) => b.modified - a.modified);
 }
 
+async function safeList(loader) {
+  try { return await loader(); } catch { return []; }
+}
+
+ipcMain.handle('bootstrap', async () => {
+  projectRoot ||= findProjectRoot();
+  presetRoot ||= findPresetRoot();
+  return { projectRoot, presetRoot, capcut: findCapCut() };
+});
+
 ipcMain.handle('status', async () => {
   projectRoot ||= findProjectRoot();
   presetRoot ||= findPresetRoot();
-  return { projectRoot, presetRoot, capcut: findCapCut(), projects: await listProjects(), presets: await listPresets(), recycle: await listRecycleBin() };
+  const [projects, presets, recycle] = await Promise.all([safeList(listProjects), safeList(listPresets), safeList(listRecycleBin)]);
+  return { projectRoot, presetRoot, capcut: findCapCut(), projects, presets, recycle };
 });
 ipcMain.handle('thumbnail', async (_event, mode, id, itemPath) => {
   const root = mode === 'presets' ? presetRoot : projectRoot;

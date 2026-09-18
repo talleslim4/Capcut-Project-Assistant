@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('capcut', {
   status: () => ipcRenderer.invoke('status'),
+  bootstrap: () => ipcRenderer.invoke('bootstrap'),
   thumbnail: (mode, id, itemPath) => ipcRenderer.invoke('thumbnail', mode, id, itemPath),
   chooseRoot: () => ipcRenderer.invoke('choose-root'),
   choosePresetRoot: () => ipcRenderer.invoke('choose-preset-root'),
