@@ -456,14 +456,14 @@ async function ensureDriveFolder(value) {
   const library = await readLibrary(); library.driveFolder = { id: folder.id, name: folder.name }; await writeLibrary(library); return driveState();
 }
 
-async function resumableDriveUpload(filePath, name, folderId, event, existingId = '') {
+async function resumableDriveUpload(filePath, name, folderId, event, existingId = '', progressContext = null) {
   const stat = await fsp.stat(filePath); const metadata = existingId ? { name } : { name, parents: [folderId] };
   const endpoint = existingId ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingId)}?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink` : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink';
   let session;
   try {
     session = await driveRequest(endpoint, { method: existingId ? 'PATCH' : 'POST', headers: { 'content-type': 'application/json; charset=UTF-8', 'x-upload-content-type': 'application/octet-stream', 'x-upload-content-length': String(stat.size) }, body: JSON.stringify(metadata) });
   } catch (error) {
-    if (existingId && /(?:404|not found|n.o encontrado)/i.test(error.message)) return resumableDriveUpload(filePath, name, folderId, event, '');
+    if (existingId && /(?:404|not found|n.o encontrado)/i.test(error.message)) return resumableDriveUpload(filePath, name, folderId, event, '', progressContext);
     throw error;
   }
   const location = session.headers.get('location'); if (!location) throw new Error('O Google não iniciou o upload.');
@@ -474,13 +474,19 @@ async function resumableDriveUpload(filePath, name, folderId, event, existingId 
       const empty = await fetch(location, { method: 'PUT', headers: { authorization: `Bearer ${accessToken}`, 'content-length': '0', 'content-range': 'bytes */0' }, body: Buffer.alloc(0) });
       if (![200, 201].includes(empty.status)) throw new Error(`Upload interrompido pelo Google (${empty.status}).`);
       result = await empty.json();
-      sendProgress(event, 'drive', 100, 'Enviando ao Google Drive', 0, 0, started);
+      const base = progressContext?.processed || 0;
+      const total = progressContext?.total || 0;
+      sendProgress(event, 'drive', total ? (base / total) * 100 : 100, 'Enviando ao Google Drive', base, total, progressContext?.started || started);
     }
     while (offset < stat.size) {
       const length = Math.min(chunkSize, stat.size - offset), buffer = Buffer.allocUnsafe(length); const { bytesRead } = await handle.read(buffer, 0, length, offset); const end = offset + bytesRead - 1;
       const response = await fetch(location, { method: 'PUT', headers: { authorization: `Bearer ${accessToken}`, 'content-length': String(bytesRead), 'content-range': `bytes ${offset}-${end}/${stat.size}` }, body: buffer.subarray(0, bytesRead) });
       if (![200, 201, 308].includes(response.status)) throw new Error(`Upload interrompido pelo Google (${response.status}).`);
-      offset += bytesRead; sendProgress(event, 'drive', offset / stat.size * 100, 'Enviando ao Google Drive', offset, stat.size, started);
+      offset += bytesRead;
+      const base = progressContext?.processed || 0;
+      const total = progressContext?.total || stat.size;
+      const processed = base + offset;
+      sendProgress(event, 'drive', total ? (processed / total) * 100 : 100, 'Enviando ao Google Drive', processed, total, progressContext?.started || started);
       if (response.status !== 308) result = await response.json();
     }
   } finally { await handle.close(); }
@@ -488,7 +494,7 @@ async function resumableDriveUpload(filePath, name, folderId, event, existingId 
 }
 
 async function syncItemToDrive(event, mode, id, automatic = false) {
-  if (driveSyncRunning.has(id)) return { busy: true };
+  if (driveSyncRunning.has(id)) return { busy: true, library: await readLibrary() };
   const library = await readLibrary(); if (!library.driveFolder?.id) throw new Error('Escolha primeiro uma pasta do Google Drive.');
   const entries = mode === 'presets' ? await listPresets() : await listProjects(); const item = entries.find((entry) => entry.id === id); if (!item) throw new Error('Item não encontrado.');
   const meta = library.items[id] || {}; const format = meta.driveFormat === 'zip' ? 'zip' : '7z'; const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 13); const displayName = safeName(meta.alias || path.parse(item.name).name); const fileName = `${displayName}_${stamp}.${format}`; const temporary = path.join(os.tmpdir(), `capcut-drive-${crypto.randomUUID()}.${format}`);
@@ -508,7 +514,7 @@ async function findDriveChild(name, parentId, mimeType = '') {
   const clauses = [`'${driveQueryName(parentId)}' in parents`, `name='${driveQueryName(name)}'`, 'trashed=false'];
   if (mimeType) clauses.push(`mimeType='${mimeType}'`);
   const query = encodeURIComponent(clauses.join(' and '));
-  const response = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size,modifiedTime,md5Checksum)&spaces=drive&includeItemsFromAllDrives=true&supportsAllDrives=true&pageSize=1`);
+  const response = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size,modifiedTime,md5Checksum)&spaces=drive&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=modifiedTime desc&pageSize=1`);
   return (await response.json()).files?.[0] || null;
 }
 async function ensureDriveChildFolder(name, parentId) {
@@ -548,19 +554,32 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
   const entries = mode === 'presets' ? await listPresets() : await listProjects(); const item = entries.find((entry) => entry.id === id); if (!item) throw new Error('Item não encontrado.');
   const meta = library.items[id] || {}; const displayName = safeName(meta.alias || path.parse(item.name).name);
   let rootFolder = await existingDriveFolder(meta.driveMirrorFolderId);
+  const canResume = Boolean(rootFolder);
   if (!rootFolder) rootFolder = await ensureDriveChildFolder(displayName, library.driveFolder.id);
   else if (rootFolder.name !== displayName) await renameDriveFolder(rootFolder.id, displayName);
   const files = await mirrorFiles(item.path); const fontInfo = await detectedInstalledFontFiles(item.path); const fontFiles = fontInfo.matched.map((font) => ({ path: font.path, relative: path.posix.join('__fonts__', path.basename(font.path)), size: 0, modified: 0 }));
   for (const font of fontFiles) { try { const stat = await fsp.stat(font.path); font.size = stat.size; font.modified = stat.mtimeMs; } catch {} }
-  const allFiles = [...files, ...fontFiles]; const total = allFiles.reduce((sum, file) => sum + file.size, 0); let processed = 0; const started = Date.now(); const previous = meta.driveMirrorFiles || {}; const next = {};
+  const allFiles = [...files, ...fontFiles]; const total = allFiles.reduce((sum, file) => sum + file.size, 0); let processed = 0; const started = Date.now(); const previous = canResume ? (meta.driveMirrorFiles || {}) : {}; const next = {};
+  // Checkpoint the manifest before starting so an interrupted sync can resume.
+  const checkpoint = await readLibrary();
+  checkpoint.items[id] = { ...(checkpoint.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: { ...previous }, driveLastName: displayName };
+  await writeLibrary(checkpoint);
   for (const file of allFiles) {
     const parts = file.relative.split('/'); const fileName = parts.pop(); let parent = rootFolder.id;
     for (const part of parts) parent = (await ensureDriveChildFolder(part, parent)).id;
-    const prior = previous[file.relative]; const unchanged = mirrorFileUnchanged(prior, file);
-    let uploaded = prior ? { id: prior.id } : null;
-    if (!unchanged) uploaded = await resumableDriveUpload(file.path, fileName, parent, event, prior?.id || '');
-    next[file.relative] = { id: uploaded?.id || prior?.id || '', size: file.size, modified: file.modified };
+    const prior = previous[file.relative];
+    // Recover an existing Drive file when an older run was interrupted before
+    // saving its manifest. This prevents each retry from creating a duplicate.
+    const existing = prior?.id ? null : await findDriveChild(fileName, parent);
+    const effectivePrior = prior || existing;
+    const unchanged = mirrorFileUnchanged(effectivePrior, file);
+    let uploaded = effectivePrior ? { id: effectivePrior.id } : null;
+    if (!unchanged) uploaded = await resumableDriveUpload(file.path, fileName, parent, event, effectivePrior?.id || '', { processed, total, started });
+    next[file.relative] = { id: uploaded?.id || effectivePrior?.id || '', size: file.size, modified: file.modified };
     processed += file.size; sendProgress(event, 'drive', total ? processed / total * 100 : 100, unchanged ? 'Verificando espelho do Google Drive' : 'Atualizando espelho do Google Drive', processed, total, started);
+    const progressLibrary = await readLibrary();
+    progressLibrary.items[id] = { ...(progressLibrary.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: { ...next }, driveLastName: displayName };
+    await writeLibrary(progressLibrary);
   }
   if (!allFiles.length) sendProgress(event, 'drive', 100, 'Espelho atualizado', 0, 0, started);
   for (const [relative, oldFile] of Object.entries(previous)) if (!next[relative] && oldFile?.id) {
@@ -589,8 +608,7 @@ async function checkAutomaticDriveSync() {
       const meta = library.items[item.id];
       const snapshot = mirrorSignature(await mirrorFiles(item.path));
       if (snapshot === meta.driveMirrorSignature) { driveObservedModified.delete(item.id); continue; }
-      const previous = driveObservedModified.get(item.id); driveObservedModified.set(item.id, snapshot);
-      if (previous !== snapshot) continue;
+      driveObservedModified.set(item.id, snapshot);
       syncItemToDrive(null, mode, item.id, true).catch((error) => mainWindow?.webContents.send('drive-sync-error', { id: item.id, message: error.message }));
     }
   } catch {} finally { automaticDriveCheckRunning = false; }
@@ -898,5 +916,5 @@ ipcMain.handle('import-preset', async (event) => {
   } finally { await fsp.rm(temp, { recursive: true, force: true }); }
 });
 
-app.whenReady().then(() => { app.setAppUserModelId('com.capcut.projectassistant'); Menu.setApplicationMenu(null); window(); setInterval(checkAutomaticDriveSync, 45000); app.on('activate', () => BrowserWindow.getAllWindows().length || window()); });
+app.whenReady().then(() => { app.setAppUserModelId('com.capcut.projectassistant'); Menu.setApplicationMenu(null); window(); setInterval(checkAutomaticDriveSync, 120000); app.on('activate', () => BrowserWindow.getAllWindows().length || window()); });
 app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());
