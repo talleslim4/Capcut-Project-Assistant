@@ -555,6 +555,12 @@ async function mirrorFiles(source) {
   await visit(source);
   return files;
 }
+async function localMd5(filePath) {
+  const hash = crypto.createHash('md5');
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest('hex');
+}
 async function existingDriveFolder(id) {
   if (!id) return null;
   try {
@@ -595,6 +601,18 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
     const children = await childrenFor(parent);
     return children.find((entry) => entry.name === name && (!mimeType || entry.mimeType === mimeType)) || null;
   };
+  const matchingExistingFile = async (name, parent, file) => {
+    const candidates = (await childrenFor(parent)).filter((entry) => entry.name === name && entry.mimeType !== 'application/vnd.google-apps.folder');
+    if (!candidates.length) return null;
+    const sameSize = candidates.filter((entry) => Number(entry.size || -1) === Number(file.size));
+    if (!sameSize.length) return candidates[0];
+    // Drive exposes MD5 for binary files. Comparing it locally lets us reuse
+    // files from mirrors created before the local manifest existed.
+    const checksum = sameSize.find((entry) => entry.md5Checksum);
+    if (!checksum) return sameSize[0];
+    const md5 = await localMd5(file.path);
+    return sameSize.find((entry) => entry.md5Checksum === md5) || candidates[0];
+  };
   const ensureCachedFolder = async (name, parent) => {
     const existing = await childFor(name, parent, 'application/vnd.google-apps.folder');
     if (existing) return existing;
@@ -608,9 +626,11 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
     const prior = previous[file.relative];
     // Recover an existing Drive file when an older run was interrupted before
     // saving its manifest. This prevents each retry from creating a duplicate.
-    const existing = prior?.id ? null : await childFor(fileName, parent);
+    const existing = prior?.id ? null : await matchingExistingFile(fileName, parent, file);
     const effectivePrior = prior || existing;
-    const unchanged = mirrorFileUnchanged(effectivePrior, file);
+    const unchanged = prior?.id
+      ? mirrorFileUnchanged(effectivePrior, file)
+      : Boolean(existing?.md5Checksum && existing.md5Checksum === await localMd5(file.path));
     let uploaded = effectivePrior ? { id: effectivePrior.id } : null;
     if (!unchanged) uploaded = await resumableDriveUpload(file.path, fileName, parent, event, effectivePrior?.id || '', { processed, total, started });
     next[file.relative] = { id: uploaded?.id || effectivePrior?.id || '', size: file.size, modified: file.modified };
