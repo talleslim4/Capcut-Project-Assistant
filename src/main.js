@@ -128,8 +128,13 @@ async function chooseDetectedFonts(source) {
 function sendProgress(event, operation, percent, phase, processed = 0, total = 0, started = Date.now()) {
   const elapsed = Math.max(.1, (Date.now() - started) / 1000);
   const rate = processed / elapsed;
-  const remaining = rate > 0 && total > processed ? Math.ceil((total - processed) / rate) : null;
-  event?.sender.send('operation-progress', { operation, percent: Math.max(0, Math.min(100, Math.round(percent))), phase, processed, total, remaining });
+  // Do not publish a wild ETA while the first few chunks are still warming up.
+  // A slow first request can otherwise turn into messages like "47.579s" even
+  // though the transfer speed stabilizes immediately afterwards.
+  const sampleReady = elapsed >= 8 && processed >= 8 * 1024 * 1024;
+  const estimated = rate > 0 && total > processed ? Math.ceil((total - processed) / rate) : null;
+  const remaining = sampleReady && estimated != null ? estimated : null;
+  event?.sender.send('operation-progress', { operation, percent: Math.max(0, Math.min(100, Math.round(percent))), phase, processed, total, remaining, estimating: !sampleReady && total > processed });
 }
 
 async function exportWithFonts(source, output, format, kind, fonts, progress) {
@@ -468,7 +473,7 @@ async function resumableDriveUpload(filePath, name, folderId, event, existingId 
   }
   const location = session.headers.get('location'); if (!location) throw new Error('O Google não iniciou o upload.');
   const accessToken = await driveAccessToken();
-  const handle = await fsp.open(filePath, 'r'); const chunkSize = 8 * 1024 * 1024; let offset = 0, result = null, started = Date.now();
+  const handle = await fsp.open(filePath, 'r'); const chunkSize = 32 * 1024 * 1024; let offset = 0, result = null, started = Date.now();
   try {
     if (stat.size === 0) {
       const empty = await fetch(location, { method: 'PUT', headers: { authorization: `Bearer ${accessToken}`, 'content-length': '0', 'content-range': 'bytes */0' }, body: Buffer.alloc(0) });
@@ -517,6 +522,19 @@ async function findDriveChild(name, parentId, mimeType = '') {
   const response = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,size,modifiedTime,md5Checksum)&spaces=drive&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=modifiedTime desc&pageSize=1`);
   return (await response.json()).files?.[0] || null;
 }
+async function listDriveChildren(parentId) {
+  const files = [];
+  let pageToken = '';
+  do {
+    const token = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+    const query = encodeURIComponent(`'${driveQueryName(parentId)}' in parents and trashed=false`);
+    const response = await driveRequest(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum)&spaces=drive&includeItemsFromAllDrives=true&supportsAllDrives=true&orderBy=modifiedTime desc&pageSize=1000${token}`);
+    const body = await response.json();
+    files.push(...(body.files || []));
+    pageToken = body.nextPageToken || '';
+  } while (pageToken);
+  return files;
+}
 async function ensureDriveChildFolder(name, parentId) {
   const existing = await findDriveChild(name, parentId, 'application/vnd.google-apps.folder');
   if (existing) return existing;
@@ -564,13 +582,33 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
   const checkpoint = await readLibrary();
   checkpoint.items[id] = { ...(checkpoint.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: { ...previous }, driveLastName: displayName };
   await writeLibrary(checkpoint);
+  // Cache one listing per Drive folder. The old implementation made one
+  // network query per local file; a CapCut project can contain thousands of
+  // files, which made the first mirror look frozen and also increased the
+  // chance of creating duplicate names after a retry.
+  const childrenCache = new Map();
+  const childrenFor = async (parent) => {
+    if (!childrenCache.has(parent)) childrenCache.set(parent, await listDriveChildren(parent));
+    return childrenCache.get(parent);
+  };
+  const childFor = async (name, parent, mimeType = '') => {
+    const children = await childrenFor(parent);
+    return children.find((entry) => entry.name === name && (!mimeType || entry.mimeType === mimeType)) || null;
+  };
+  const ensureCachedFolder = async (name, parent) => {
+    const existing = await childFor(name, parent, 'application/vnd.google-apps.folder');
+    if (existing) return existing;
+    const created = await ensureDriveChildFolder(name, parent);
+    childrenFor(parent).then((children) => children.unshift(created)).catch(() => {});
+    return created;
+  };
   for (const file of allFiles) {
     const parts = file.relative.split('/'); const fileName = parts.pop(); let parent = rootFolder.id;
-    for (const part of parts) parent = (await ensureDriveChildFolder(part, parent)).id;
+    for (const part of parts) parent = (await ensureCachedFolder(part, parent)).id;
     const prior = previous[file.relative];
     // Recover an existing Drive file when an older run was interrupted before
     // saving its manifest. This prevents each retry from creating a duplicate.
-    const existing = prior?.id ? null : await findDriveChild(fileName, parent);
+    const existing = prior?.id ? null : await childFor(fileName, parent);
     const effectivePrior = prior || existing;
     const unchanged = mirrorFileUnchanged(effectivePrior, file);
     let uploaded = effectivePrior ? { id: effectivePrior.id } : null;
