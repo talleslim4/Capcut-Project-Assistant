@@ -3,6 +3,13 @@ let activeFilter={type:'all',value:null},editingItem=null,folderClientId=null,se
 const selected=new Set(),expandedClients=new Set(),expandedFolders=new Set(),fontCache={},thumbnailCache={},thumbnailQueue=[],thumbnailQueued=new Set(),$=(id)=>document.getElementById(id);
 let activeThumbnailLoads=0;
 const MAX_THUMBNAIL_LOADS=3;
+let driveProgress=null;
+function renderDriveProgress(){const host=$('drive-progress');if(!host)return;const bar=document.querySelector('.drive-bar');if(bar&&host.parentElement!==bar)bar.append(host);if(!driveProgress){host.hidden=true;return}host.hidden=false;const percent=Math.max(0,Math.min(100,driveProgress.percent||0));$('drive-progress-percent').textContent=`${percent}%`;$('drive-progress-title').textContent=driveProgress.title||'Sincronizando com o Google Drive…';$('drive-progress-detail').textContent=driveProgress.phase||'Preparando arquivos…';$('drive-progress-fill').style.width=`${percent}%`;$('drive-progress-meta').textContent=driveProgress.total?`${bytes(driveProgress.processed||0)} de ${bytes(driveProgress.total)}${driveProgress.remaining==null?'':' · '+(driveProgress.remaining<2?'Finalizando…':`cerca de ${driveProgress.remaining}s`)}`:'Analisando arquivos…'}
+window.capcut.onProgress((data)=>{if(data.operation!=='drive')return;driveProgress={...driveProgress,percent:data.percent||0,phase:data.phase,processed:data.processed,total:data.total,remaining:data.remaining};renderDriveProgress()});
+window.capcut.onDriveComplete(()=>{driveProgress=null;renderDriveProgress()});
+window.capcut.onDriveError(()=>{driveProgress=null;renderDriveProgress()});
+const blockingLoading=loading;
+loading=function(show,title,detail){if(show&&/^(Espelhando|Atualizando)/.test(title||''))return;if(!show&&driveProgress){driveProgress=null;renderDriveProgress();return}return blockingLoading(show,title,detail)};
 const items=()=>state.mode==='projects'?state.projects:state.mode==='presets'?state.presets:state.recycle;
 const root=()=>state.mode==='presets'?state.presetRoot:state.projectRoot;
 const metadata=(item)=>state.library.items[item.id]||{};
