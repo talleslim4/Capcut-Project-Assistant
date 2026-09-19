@@ -1,6 +1,6 @@
 {
   "name": "capcut-project-assistant",
-  "version": "1.7.9",
+  "version": "1.7.10",
   "description": "Importador e exportador seguro de projetos do CapCut para Windows e macOS",
   "main": "src/main.js",
   "author": "CapCut Project Assistant",
