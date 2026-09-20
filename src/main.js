@@ -462,7 +462,26 @@ async function ensureDriveFolder(value) {
 }
 
 async function resumableDriveUpload(filePath, name, folderId, event, existingId = '', progressContext = null) {
-  const stat = await fsp.stat(filePath); const metadata = existingId ? { name } : { name, parents: [folderId] };
+  const stat = await fsp.stat(filePath);
+  // A resumable session is expensive for the thousands of small JSON/cache
+  // files found in CapCut projects. Use one multipart request for small files.
+  if (stat.size <= 8 * 1024 * 1024) {
+    const metadata = existingId ? { name } : { name, parents: [folderId] };
+    const boundary = `capcut-${crypto.randomUUID()}`;
+    const header = Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const content = await fsp.readFile(filePath);
+    const endpoint = existingId
+      ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingId)}?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink`
+      : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink';
+    const response = await driveRequest(endpoint, {
+      method: existingId ? 'PATCH' : 'POST',
+      headers: { 'content-type': `multipart/related; boundary=${boundary}` },
+      body: Buffer.concat([header, content, footer])
+    });
+    return response.json();
+  }
+  const metadata = existingId ? { name } : { name, parents: [folderId] };
   const endpoint = existingId ? `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingId)}?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink` : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,webViewLink';
   let session;
   try {
@@ -613,14 +632,23 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
     const md5 = await localMd5(file.path);
     return sameSize.find((entry) => entry.md5Checksum === md5) || candidates[0];
   };
+  const folderPromises = new Map();
   const ensureCachedFolder = async (name, parent) => {
-    const existing = await childFor(name, parent, 'application/vnd.google-apps.folder');
-    if (existing) return existing;
-    const created = await ensureDriveChildFolder(name, parent);
-    childrenFor(parent).then((children) => children.unshift(created)).catch(() => {});
-    return created;
+    const key = `${parent}\0${name}`;
+    if (folderPromises.has(key)) return folderPromises.get(key);
+    const promise = (async () => {
+      const existing = await childFor(name, parent, 'application/vnd.google-apps.folder');
+      if (existing) return existing;
+      const created = await ensureDriveChildFolder(name, parent);
+      childrenCache.get(parent)?.unshift(created);
+      return created;
+    })();
+    folderPromises.set(key, promise);
+    return promise;
   };
-  for (const file of allFiles) {
+  let nextIndex = 0;
+  let progressLock = Promise.resolve();
+  const processFile = async (file) => {
     const parts = file.relative.split('/'); const fileName = parts.pop(); let parent = rootFolder.id;
     for (const part of parts) parent = (await ensureCachedFolder(part, parent)).id;
     const prior = previous[file.relative];
@@ -633,12 +661,27 @@ async function syncMirrorToDrive(event, mode, id, automatic = false) {
       : Boolean(existing?.md5Checksum && existing.md5Checksum === await localMd5(file.path));
     let uploaded = effectivePrior ? { id: effectivePrior.id } : null;
     if (!unchanged) uploaded = await resumableDriveUpload(file.path, fileName, parent, event, effectivePrior?.id || '', { processed, total, started });
-    next[file.relative] = { id: uploaded?.id || effectivePrior?.id || '', size: file.size, modified: file.modified };
-    processed += file.size; sendProgress(event, 'drive', total ? processed / total * 100 : 100, unchanged ? 'Verificando espelho do Google Drive' : 'Atualizando espelho do Google Drive', processed, total, started);
-    const progressLibrary = await readLibrary();
-    progressLibrary.items[id] = { ...(progressLibrary.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: { ...next }, driveLastName: displayName };
-    await writeLibrary(progressLibrary);
-  }
+    let release;
+    const previousLock = progressLock;
+    progressLock = new Promise((resolve) => { release = resolve; });
+    await previousLock;
+    try {
+      next[file.relative] = { id: uploaded?.id || effectivePrior?.id || '', size: file.size, modified: file.modified };
+      processed += file.size;
+      sendProgress(event, 'drive', total ? processed / total * 100 : 100, unchanged ? 'Verificando espelho do Google Drive' : 'Atualizando espelho do Google Drive', processed, total, started);
+      const progressLibrary = await readLibrary();
+      progressLibrary.items[id] = { ...(progressLibrary.items[id] || {}), driveSync: true, driveMirrorFolderId: rootFolder.id, driveMirrorFiles: { ...next }, driveLastName: displayName };
+      await writeLibrary(progressLibrary);
+    } finally { release(); }
+  };
+  const workerCount = Math.min(3, Math.max(1, allFiles.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= allFiles.length) return;
+      await processFile(allFiles[index]);
+    }
+  }));
   if (!allFiles.length) sendProgress(event, 'drive', 100, 'Espelho atualizado', 0, 0, started);
   for (const [relative, oldFile] of Object.entries(previous)) if (!next[relative] && oldFile?.id) {
     try { await driveRequest(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(oldFile.id)}?supportsAllDrives=true`, { method: 'DELETE' }); } catch {}
